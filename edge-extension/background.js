@@ -1,6 +1,11 @@
 const BRIDGE = "http://127.0.0.1:27123";
 const WS_URL = "ws://127.0.0.1:27123/ws";
-const TOKEN = "__EDGE_MRU_LOCAL_TOKEN__";
+// Generated once by scripts/prepare_install.py; kept out of Git.
+importScripts("bridge-token.js");
+const TOKEN = globalThis.EDGE_MRU_LOCAL_TOKEN;
+if (typeof TOKEN !== "string" || !/^[0-9a-f]{64}$/.test(TOKEN)) {
+  throw new Error("Run scripts/prepare_install.py to prepare the local bridge token.");
+}
 
 const MIN_TABS = 2;
 const MAX_TABS = 25;

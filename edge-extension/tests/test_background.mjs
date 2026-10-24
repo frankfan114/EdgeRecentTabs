@@ -7,6 +7,11 @@ import { Blob, Buffer } from "node:buffer";
 export async function runTests(root) {
   const source = await fs.readFile(path.join(root, "background.js"), "utf8");
   const manifest = JSON.parse(await fs.readFile(path.join(root, "manifest.json"), "utf8"));
+  const tokenScript = await fs.readFile(path.join(root, "bridge-token.js"), "utf8")
+    .catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+      return 'globalThis.EDGE_MRU_LOCAL_TOKEN = "' + "a".repeat(64) + '";';
+    });
   assert(manifest.permissions.includes("favicon"));
   const tabs = Array.from({ length: 12 }, (_, i) => ({
     id: i + 1, windowId: i < 9 ? 1 : 2, index: i, title: `Tab ${i + 1}`,
@@ -15,6 +20,11 @@ export async function runTests(root) {
   const listeners = {};
   const messages = [];
   const faviconRequests = [];
+  const captures = [];
+  const scaledSizes = [];
+  let focused = true;
+  let bitmapsClosed = 0;
+  let captureVisible = async () => "data:image/jpeg;base64,cHJldmlldw==";
   let fetchFavicon = async () => ({ ok: true, blob: async () => new Blob(["png"], { type: "image/png" }) });
   let settings = { maxTabs: 9, tabScope: "current" };
   const event = (name) => ({ addListener(callback) { listeners[name] = callback; } });
@@ -27,9 +37,29 @@ export async function runTests(root) {
   }
   const context = vm.createContext({
     URL, Blob, AbortSignal, WebSocket: Socket,
+    importScripts: (name) => {
+      assert.equal(name, "bridge-token.js");
+      try {
+        new vm.Script(tokenScript).runInContext(context);
+        assert.match(context.EDGE_MRU_LOCAL_TOKEN, /^[0-9a-f]{64}$/);
+      } catch (_) {
+        // Do not print generated source: it contains a private credential.
+        throw new Error("Generated bridge-token.js failed to execute or set a valid token");
+      }
+    },
+    createImageBitmap: async () => ({ width: 1920, height: 1080,
+      close() { bitmapsClosed += 1; } }),
+    OffscreenCanvas: class {
+      constructor(width, height) { scaledSizes.push([width, height]); }
+      getContext() { return { drawImage() {} }; }
+      async convertToBlob() { return new Blob(["small"], { type: "image/jpeg" }); }
+    },
     btoa: (value) => Buffer.from(value, "binary").toString("base64"),
     setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
     fetch: async (url) => {
+      if (String(url).startsWith("data:image/")) {
+        return { blob: async () => new Blob(["preview"], { type: "image/jpeg" }) };
+      }
       if (String(url).includes("/_favicon/")) {
         faviconRequests.push(String(url));
         return fetchFavicon(url);
@@ -47,10 +77,14 @@ export async function runTests(root) {
         query: async (query) => tabs.filter((tab) => (!query.active || tab.active)
           && (query.windowId == null || tab.windowId === query.windowId)),
         get: async (id) => { const tab = tabs.find((item) => item.id === id); assert(tab); return tab; },
+        captureVisibleTab: async (windowId, options) => {
+          captures.push({ windowId, options });
+          return captureVisible();
+        },
         onActivated: event("activated"), onUpdated: event("updated"), onRemoved: event("removed"),
         onAttached: event("attached"), onMoved: event("moved"),
       },
-      windows: { getLastFocused: async () => ({ id: 1 }), get: async () => ({ focused: true }),
+      windows: { getLastFocused: async () => ({ id: 1 }), get: async () => ({ focused }),
         onFocusChanged: event("focused"), WINDOW_ID_NONE: -1 },
     },
   });
@@ -59,7 +93,9 @@ export async function runTests(root) {
     ready: mruReady, favicon: publishFavicon, scope: publishFaviconsForScope,
     state: () => ({ mruTabs, faviconCache, pendingFavicons }),
     setMru: (tabs) => { mruTabs = tabs.map(normalizeMruEntry); },
-    refresh: refreshMruMetadata,
+    refresh: refreshMruMetadata, activate: publishTab, snapshot: publishSnapshot,
+    capture: captureThumbnail, remember: rememberThumbnail, cached: publishCachedThumbnails,
+    previews: () => thumbnailCache,
   })`, context);
   await api.ready;
   await Promise.resolve(); // Initial socket setup.
@@ -157,5 +193,47 @@ export async function runTests(root) {
   assert.equal(api.state().faviconCache.size, 100);
   assert(!api.state().faviconCache.has(100));
   assert(api.state().faviconCache.has(200));
-  return "JavaScript checks passed: icon transport, caching, races, scope, metadata, and failures";
+  // Browsing order, not tab-strip index, controls the MRU snapshot sent to Lua.
+  api.setMru(tabs);
+  await api.activate(8);
+  await api.activate(3);
+  await api.activate(6);
+  assert.deepEqual(Array.from(api.state().mruTabs.slice(0, 3), (tab) => tab.tabId), [6, 3, 8]);
+  await api.snapshot();
+  const mruSnapshot = messages.filter((m) => m.type === "mruSnapshot").at(-1);
+  assert.deepEqual(mruSnapshot.tabs.slice(0, 3).map((tab) => tab.tabId), [6, 3, 8]);
+
+  // Preview capture remains asynchronous, resized, and limited to a focused active tab.
+  api.setMru(tabs);
+  settings = { maxTabs: 3, tabScope: "current" };
+  await api.capture(2);
+  assert.equal(captures.length, 0, "Background tabs must not trigger screenshots");
+  focused = false;
+  await api.capture(1);
+  assert.equal(captures.length, 0, "Other apps must not trigger screenshots");
+  focused = true;
+  await api.capture(1);
+  assert.equal(captures.length, 1);
+  assert.deepEqual(scaledSizes[0], [520, 293]);
+  assert.equal(bitmapsClosed, 1, "Full-size bitmap must be released after resize");
+  assert(api.previews().has(1));
+  assert(messages.some((m) => m.type === "thumbnail" && m.tabId === 1));
+
+  // Errors release the in-flight guard, so the next visit can capture again.
+  captureVisible = async () => { throw new Error("Cannot capture protected page"); };
+  await api.capture(1);
+  captureVisible = async () => "data:image/jpeg;base64,cHJldmlldw==";
+  await api.capture(1);
+  assert.equal(bitmapsClosed, 2);
+  for (let id = 1; id <= 51; id++) api.remember(id, "data:image/jpeg;base64,c21hbGw=");
+  assert.equal(api.previews().size, 50);
+  assert(!api.previews().has(1) && api.previews().has(51));
+  const beforeCached = messages.length;
+  const beforeCapture = captures.length;
+  await api.cached();
+  const cached = messages.slice(beforeCached).filter((m) => m.type === "thumbnail");
+  assert.equal(cached.length, 3);
+  assert(cached.every((m) => m.tabId <= 9));
+  assert.equal(captures.length, beforeCapture, "Replaying previews must use the cache");
+  return "JavaScript checks passed: generated config, visit-order MRU, icons, previews, bounded caches, focus, races, and failures";
 }

@@ -47,14 +47,13 @@ local navigationTap = nil
 local swallowedKeys = {}
 
 local optionReleaseTimer = nil
-local optionTabHotkey = nil
-local optionShiftTabHotkey = nil
 local appWatcher = nil
 local wakeWatcher = nil
 local wakeRecoveryTimer = nil
 
 local bridgeServer = nil
 local bridgeSocketLastSeen = 0
+local bridgeDiagnostics = { accepted = 0, rejected = 0, invalid = 0, lastType = "" }
 local pendingSwitch = nil
 local pendingSwitchTimer = nil
 local requestCounter = 0
@@ -587,6 +586,23 @@ local function startBridge()
             return "edge-mru-ok", 200, bridgeHeaders()
         end
 
+        if method == "GET" and path == "/status" then
+            local previewCount = 0
+            for _ in pairs(previewImages) do previewCount = previewCount + 1 end
+            local headers = bridgeHeaders()
+            headers["Content-Type"] = "application/json"
+            return hs.json.encode({
+                socketAuthenticated = bridgeSocketIsReady(),
+                acceptedSocketMessages = bridgeDiagnostics.accepted,
+                rejectedSocketMessages = bridgeDiagnostics.rejected,
+                invalidSocketMessages = bridgeDiagnostics.invalid,
+                lastSocketMessage = bridgeDiagnostics.lastType,
+                receivedMruSnapshot = restoredMruSnapshot,
+                recentTabCount = #recentTabs,
+                previewCount = previewCount,
+            }), 200, headers
+        end
+
         if method ~= "POST" or path ~= "/edge-mru" then
             return "not found", 404, bridgeHeaders()
         end
@@ -640,12 +656,15 @@ local function startBridge()
     end)
 
     bridgeServer:websocket("/ws", function(message)
-        bridgeSocketLastSeen = nowSeconds()
         local ok, payload = pcall(hs.json.decode, message or "")
-        if ok and type(payload) == "table" then
-            if not payload.token or payload.token == BRIDGE_TOKEN then
-                handleBridgePayload(payload)
-            end
+        if not ok or type(payload) ~= "table" then
+            bridgeDiagnostics.invalid = bridgeDiagnostics.invalid + 1
+        elseif payload.token ~= BRIDGE_TOKEN then
+            bridgeDiagnostics.rejected = bridgeDiagnostics.rejected + 1
+        else
+            bridgeDiagnostics.accepted = bridgeDiagnostics.accepted + 1
+            bridgeDiagnostics.lastType = tostring(payload.type or "")
+            handleBridgePayload(payload)
         end
         return ""
     end)
@@ -1025,7 +1044,7 @@ end
 -- Switching
 ------------------------------------------------------------
 
-local function beginOrCycle(direction)
+local function beginOrCycle(direction, hostWindow)
     if not switching then
         switchChoices = choicesForCurrentScope()
 
@@ -1037,7 +1056,7 @@ local function beginOrCycle(direction)
         end
 
         switching = true
-        overlayHostWindow = hs.window.focusedWindow()
+        overlayHostWindow = hostWindow
 
         if direction > 0 then
             selectedIndex = #switchChoices > 1 and 2 or 1
@@ -1110,15 +1129,92 @@ for i = 1, 9 do
     numberKeys[hs.keycodes.map[tostring(i)]] = i
 end
 
-navigationTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown, hs.eventtap.event.types.keyUp }, function(event)
+-- Keep the existing release watchdog only while the panel is open. The
+-- flagsChanged event below normally commits immediately, without its 20ms wait.
+local function watchOptionRelease()
+    if optionReleaseTimer then return end
+    optionReleaseTimer = hs.timer.doEvery(0.02, function()
+        if not edgeIsFrontmost() then
+            finishSwitch(true)
+        elseif not hs.eventtap.checkKeyboardModifiers().alt then
+            finishSwitch()
+        end
+    end)
+end
+
+local function handleOptionTab(direction)
+    if not edgeIsFrontmost() then
+        finishSwitch(true)
+        swallowedKeys = {}
+        return false
+    end
+
+    local hostWindow
+    if not switching then
+        -- Query Accessibility once on opening, not on every cycle or timer tick.
+        -- A temporary missing window result while the panel is open is harmless.
+        hostWindow = hs.window.focusedWindow()
+        local app = hostWindow and hostWindow:application()
+        if not app or app:bundleID() ~= "com.microsoft.edgemac" then return false end
+    end
+
+    beginOrCycle(direction, hostWindow)
+    if switching then watchOptionRelease() end
+    return switching
+end
+
+-- Reuse the navigation tap instead of registering global Option+Tab hotkeys.
+-- Unrelated keys take the cheap path; other apps keep their original key events.
+navigationTap = hs.eventtap.new({
+    hs.eventtap.event.types.keyDown,
+    hs.eventtap.event.types.keyUp,
+    hs.eventtap.event.types.flagsChanged,
+}, function(event)
+    local eventType = event:getType()
+    if eventType == hs.eventtap.event.types.flagsChanged then
+        if switching then
+            if not edgeIsFrontmost() then
+                finishSwitch(true)
+                swallowedKeys = {}
+            elseif not event:getFlags().alt then
+                finishSwitch()
+            end
+        end
+        return false
+    end
+
     local code = event:getKeyCode()
-    if event:getType() == hs.eventtap.event.types.keyUp then
+    local key = hs.keycodes.map[code]
+    -- Check focus during an active session, including its final key-up. Do not
+    -- depend on application notifications arriving before the next key event.
+    if (switching or swallowedKeys[code]) and not edgeIsFrontmost() then
+        finishSwitch(true)
+        swallowedKeys = {}
+        return false
+    end
+    if eventType == hs.eventtap.event.types.keyUp then
         if swallowedKeys[code] then swallowedKeys[code] = nil; return true end
         return false
     end
-    -- Consume held-key repeats after cancellation until the physical key is up.
-    if not switching then return swallowedKeys[code] == true end
-    local key = hs.keycodes.map[code]
+    -- Consume held-key repeats after Escape until the physical key is up.
+    if swallowedKeys[code] and (not switching or key == "tab") then return true end
+
+    if key == "tab" then
+        local flags = event:getFlags()
+        if flags.alt and not flags.cmd and not flags.ctrl then
+            -- Match the old hotkeys: one cycle per physical press, no auto-repeat.
+            if event:getProperty(hs.eventtap.event.properties.keyboardEventAutorepeat) == 1 then
+                return false
+            end
+            if handleOptionTab(flags.shift and -1 or 1) then
+                swallowedKeys[code] = true
+                return true
+            end
+        end
+        return false
+    end
+
+    if not switching then return false end
     if key == "escape" then
         swallowedKeys[code] = true
         finishSwitch(true)
@@ -1141,45 +1237,13 @@ navigationTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown, hs.eventtap.e
 end)
 navigationTap:start()
 
-local function watchOptionRelease()
-    if optionReleaseTimer then return end
-    optionReleaseTimer = hs.timer.doEvery(0.02, function()
-        local modifiers = hs.eventtap.checkKeyboardModifiers()
-        if not modifiers.alt then finishSwitch() end
-    end)
-end
-
-local function handleOptionTab(direction)
-    beginOrCycle(direction)
-    if switching then watchOptionRelease() end
-end
-
-------------------------------------------------------------
--- Hotkeys / focus
-------------------------------------------------------------
-
-optionTabHotkey = hs.hotkey.new({"alt"}, "tab", function()
-    handleOptionTab(1)
-end)
-
-optionShiftTabHotkey = hs.hotkey.new({"alt", "shift"}, "tab", function()
-    handleOptionTab(-1)
-end)
-
-local function updateOptionTabHotkeys()
-    if edgeIsFrontmost() then
-        optionTabHotkey:enable()
-        optionShiftTabHotkey:enable()
-    elseif not switching then
-        optionTabHotkey:disable()
-        optionShiftTabHotkey:disable()
-    end
-end
-
 appWatcher = hs.application.watcher.new(function(appName, eventType, app)
-    if eventType == hs.application.watcher.activated then
-        if switching and not edgeIsFrontmost() then finishSwitch(true) end
-        updateOptionTabHotkeys()
+    if (eventType == hs.application.watcher.deactivated
+            and app and app:bundleID() == "com.microsoft.edgemac")
+        or (eventType == hs.application.watcher.activated and not edgeIsFrontmost())
+    then
+        finishSwitch(true)
+        swallowedKeys = {}
     end
 end)
 appWatcher:start()
@@ -1214,11 +1278,8 @@ local function scheduleWakeRecovery()
         hideOverlay()
         clearPendingSwitch()
         bridgeSocketLastSeen = 0
-        updateOptionTabHotkeys()
         navigationTap:start()
         startBridge()
-
-        hs.timer.doAfter(0.75, updateOptionTabHotkeys)
     end)
 end
 
@@ -1244,7 +1305,6 @@ end)
 -- Start
 ------------------------------------------------------------
 
-updateOptionTabHotkeys()
 startBridge()
 
 -- Give the extension time to reconnect and restore the authoritative snapshot.

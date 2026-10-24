@@ -15,11 +15,13 @@ local otherApplication = { bundleID = function() return "other" end,
 local screen = { frame = function() return screenFrame end }
 local window = { screen = function() return screen end, frame = function() return windowFrame end,
     application = function() return windowOwnerEdge and edgeApplication or otherApplication end }
-local navigationCallback, applicationCallback
+local navigationCallback, applicationCallback, httpCallback, websocketCallback
+local frontmostReads, windowReads, tapCount = 0, 0, 0
 local function object()
     return setmetatable({}, { __index = function(_, key)
         return function(self, value)
             if key == "send" then table.insert(sent, value) end
+            if key == "setCallback" then httpCallback = value end
             return self
         end
     end })
@@ -40,12 +42,16 @@ hs = {
     image = { imageFromAppBundle = function() return "edge-icon" end,
         imageFromURL = function(url) return "decoded:" .. url end },
     application = { frontmostApplication = function()
+        frontmostReads = frontmostReads + 1
         return frontmostEdge and edgeApplication or otherApplication
     end, watcher = { activated = 1, deactivated = 2, new = function(callback)
         applicationCallback = callback; return object()
     end } },
     timer = { secondsSinceEpoch = function() return clock end, doEvery = timer, doAfter = timer },
-    window = { focusedWindow = function() if focusedWindowAvailable then return window end end },
+    window = { focusedWindow = function()
+        windowReads = windowReads + 1
+        if focusedWindowAvailable then return window end
+    end },
     screen = { mainScreen = function() return screen end },
     canvas = { new = function(frame)
         local c = { bounds = frame }
@@ -60,7 +66,9 @@ hs = {
     eventtap = { checkKeyboardModifiers = function() return modifiers end,
         event = { types = { keyDown = 1, keyUp = 2, flagsChanged = 3 },
             properties = { keyboardEventAutorepeat = 1 } },
-        new = function(_, callback) navigationCallback = callback; return object() end },
+        new = function(_, callback)
+            tapCount = tapCount + 1; navigationCallback = callback; return object()
+        end },
     keycodes = { map = keys },
     hotkey = { new = function(mods, key, callback)
         local hotkey = { mods = mods, key = key, callback = callback, enabled = false }
@@ -70,8 +78,12 @@ hs = {
         return hotkey
     end,
         bind = function() end },
-    httpserver = { new = object },
-    json = { encode = function(payload) return payload end },
+    httpserver = { new = function()
+        local server = object()
+        function server:websocket(path, callback) websocketCallback = callback; return self end
+        return server
+    end },
+    json = { encode = function(payload) return payload end, decode = function(payload) return payload end },
     caffeinate = { watcher = { new = object } },
     alert = { show = function() end },
     osascript = { applescript = function() error("Unexpected AppleScript fallback") end },
@@ -81,6 +93,7 @@ local source = file:read("*a"); file:close()
 local testExports = [[
 return {
     begin = handleOptionTab, finish = finishSwitch, payload = handleBridgePayload,
+    token = BRIDGE_TOKEN,
     state = function() return switching, selectedIndex, overlay, overlayCardElements,
         overlayResizeTimer, optionReleaseTimer, recentTabs, faviconImages end,
 }
@@ -194,35 +207,141 @@ frontmostEdge = false
 applicationCallback("Other", 1)
 assert(not tool.state() and not iconPanel.visible)
 
--- The restored version uses the original Hammerspoon Option+Tab hotkeys,
--- enabled by frontmost-app notifications rather than per-key window checks.
-assert(#hotkeys == 2)
-assert(hotkeys[1].key == "tab" and hotkeys[1].mods[1] == "alt")
-assert(hotkeys[2].key == "tab" and hotkeys[2].mods[2] == "shift")
-assert(not hotkeys[1].enabled and not hotkeys[2].enabled)
+-- Option+Tab shares the single existing event tap, without global hotkeys.
+assert(#hotkeys == 0 and tapCount == 1)
 frontmostEdge = true
 applicationCallback("Microsoft Edge", 1, edgeApplication)
-assert(hotkeys[1].enabled and hotkeys[2].enabled)
 fixture(9); tool.finish(true)
-hotkeys[1].callback()
+assert(press("tab", { alt = true }))
 local open, forward = tool.state()
 assert(open and forward == 2)
-hotkeys[2].callback()
+assert(press("tab", { alt = true, shift = true }))
 local _, reverse = tool.state(); assert(reverse == 1)
 assert(not press("tab", { ctrl = true }), "Control+Tab should remain native")
+assert(not press("tab", { alt = true, cmd = true }))
 
--- Losing a focused-window accessibility result does not cancel an open
--- switcher in this version as long as Option remains held.
+-- Missing Accessibility results during an open session must not cancel it.
 local _, _, panel, _, _, release = tool.state()
 focusedWindowAvailable = false
 release.callback()
 assert(tool.state() and panel.visible)
+assert(press("tab", { alt = true }))
 focusedWindowAvailable = true
 modifiers.alt = false
 release.callback()
 assert(not tool.state() and not panel.visible)
 
+-- An ordinary physical Option release commits immediately, without a timer tick.
+fixture(9)
+local countBeforeRelease = #sent
+local _, _, _, _, _, fastRelease = tool.state()
+assert(not event("a", 3, {}))
+assert(not tool.state() and #sent == countBeforeRelease + 1 and fastRelease.stopped)
+fastRelease.callback()
+assert(#sent == countBeforeRelease + 1, "Release must commit only once")
+
+-- Other apps keep both halves of the shortcut, even without app notifications.
 frontmostEdge = false
-applicationCallback("Other", 1, otherApplication)
-assert(not hotkeys[1].enabled and not hotkeys[2].enabled)
-print("Lua behavior checks passed: original Option+Tab hotkeys, release, cancellation, navigation, resize, and icons")
+local countBeforeOther = #sent
+assert(not event("tab", 1, { alt = true }))
+assert(not event("tab", 2, { alt = true }))
+assert(not tool.state() and #sent == countBeforeOther)
+-- A missing or differently owned window must not start a new session.
+frontmostEdge = true
+windowOwnerEdge = false
+assert(not press("tab", { alt = true }))
+windowOwnerEdge = true
+focusedWindowAvailable = false
+assert(not press("tab", { alt = true }))
+focusedWindowAvailable = true
+
+-- Focus loss before the watcher fires cancels on release, without activating Edge.
+fixture(9)
+frontmostEdge = false
+local beforeLostFocus = #sent
+assert(not event("a", 3, {}))
+assert(not tool.state() and #sent == beforeLostFocus)
+frontmostEdge = true
+fixture(9)
+local _, _, _, _, _, lostFocusTimer = tool.state()
+frontmostEdge = false
+modifiers.alt = false
+lostFocusTimer.callback()
+assert(not tool.state() and #sent == beforeLostFocus)
+
+-- Navigation and outstanding key-ups also pass through immediately after focus loss.
+frontmostEdge = true
+fixture(9)
+assert(event("right", 1, { alt = true }))
+frontmostEdge = false
+assert(not event("right", 2, { alt = true }))
+assert(not press("9", { alt = true }))
+assert(not tool.state() and #sent == beforeLostFocus)
+
+-- Edge deactivation cancels even if frontmostApplication has not updated yet.
+frontmostEdge = true
+fixture(9)
+applicationCallback("Microsoft Edge", 2, edgeApplication)
+assert(not tool.state() and #sent == beforeLostFocus)
+
+-- Preserve one cycle per Tab press, arrow repeats, and Escape cancellation.
+fixture(9); tool.finish(true)
+assert(event("tab", 1, { alt = true }))
+local _, once = tool.state()
+assert(event("tab", 1, { alt = true }, true))
+local _, stillOnce = tool.state(); assert(once == stillOnce)
+assert(event("tab", 2, { alt = true }))
+assert(event("right", 1, { alt = true }))
+local _, firstArrow = tool.state()
+assert(event("right", 1, { alt = true }, true))
+local _, nextArrow = tool.state(); assert(nextArrow == firstArrow + 1)
+assert(event("right", 2, { alt = true }))
+assert(event("tab", 1, { alt = true }))
+assert(press("escape"))
+assert(event("tab", 1, { alt = true }, true) and not tool.state())
+assert(event("tab", 2, { alt = true }))
+
+-- An inactive tap allocates no timers and queries no apps/windows for ordinary keys.
+local readsBefore, windowsBefore, timersBefore = frontmostReads, windowReads, #timers
+local started = os.clock()
+for _ = 1, 100000 do
+    assert(not press("a", {}))
+    assert(not event("a", 3, {}))
+end
+assert(frontmostReads == readsBefore and windowReads == windowsBefore and #timers == timersBefore)
+print(string.format("Idle mock path: 300000 events in %.3fs; zero app/window queries or added timers", os.clock() - started))
+print("Lua behavior checks passed: Edge-only shortcuts, release/focus races, pass-through, navigation, resize, and icons")
+
+-- A connected socket with stale credentials is not a healthy extension bridge.
+clock = clock + 20
+local beforeStatus = httpCallback("GET", "/status")
+assert(not beforeStatus.socketAuthenticated)
+websocketCallback({ token = "old-token", type = "heartbeat" })
+local rejectedStatus = httpCallback("GET", "/status")
+assert(rejectedStatus.rejectedSocketMessages == beforeStatus.rejectedSocketMessages + 1)
+assert(not rejectedStatus.socketAuthenticated)
+websocketCallback({ type = "heartbeat" })
+assert(not httpCallback("GET", "/status").socketAuthenticated)
+websocketCallback({ token = tool.token, type = "heartbeat" })
+local authenticatedStatus = httpCallback("GET", "/status")
+assert(authenticatedStatus.socketAuthenticated)
+assert(authenticatedStatus.acceptedSocketMessages == beforeStatus.acceptedSocketMessages + 1)
+assert(authenticatedStatus.lastSocketMessage == "heartbeat")
+print("Bridge checks passed: authenticated health, rejected credentials, and aggregate-only diagnostics")
+
+-- The UI retains extension visit order; authenticated activations update it.
+tool.finish(true)
+frontmostEdge = true
+local shuffled = {}
+for index, id in ipairs({ 8, 3, 6 }) do
+    shuffled[index] = { tabId = id, windowId = 1, index = id - 1,
+        title = "Tab " .. id, url = "https://example.com/" .. id }
+end
+websocketCallback({ token = tool.token, type = "mruSnapshot", tabs = shuffled })
+local _, _, _, _, _, _, ordered = tool.state()
+assert(ordered[1].edgeTabID == "8" and ordered[2].edgeTabID == "3" and ordered[3].edgeTabID == "6")
+httpCallback("POST", "/edge-mru", {}, { token = tool.token, type = "activated",
+    tabId = 6, windowId = 1, index = 5, title = "Tab 6", url = "https://example.com/6", windowFocused = true })
+local _, _, _, _, _, _, updatedOrder = tool.state()
+assert(updatedOrder[1].edgeTabID == "6" and updatedOrder[2].edgeTabID == "8" and updatedOrder[3].edgeTabID == "3")
+print("MRU checks passed: extension order and authenticated activation updates")

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Document the [2026-10-24 MRU and preview incident](docs/incidents/2026-10-24-mru-preview-authentication.md), including the stale-worker credential mismatch, fallback behavior, and end-to-end recovery evidence.
+
+- Report authenticated bridge state and cache counts at `/status`; rejected WebSocket credentials no longer mark the connection healthy.
+- Check generated token scripts and MRU visit order in the regression suites.
+- Reuse the existing keyboard event tap for Edge-only Option+Tab; pass keys through in other apps without global shortcut registrations.
+- Commit immediately on Option release, retain the active-session watchdog, and cancel on focus loss even before app notifications arrive.
+- Preserve preview limits and generate a shared private token file in both extension folders, allowing existing source-folder installations to reload in place.
+- Add regression checks for focus races, native key pass-through, idle-path work, thumbnail resizing, bitmap release, and bounded caches.
+
 ## 1.6.0 — initial public baseline
 
 - Microsoft Edge tab switcher for macOS using Hammerspoon and a local extension bridge.
