@@ -1,6 +1,6 @@
-# Edge MRU Tab Switcher
+# EdgeRecentTabs
 
-An experimental Option+Tab switcher for Microsoft Edge on macOS, built with Hammerspoon and a small Edge extension.
+Switch between recently used Microsoft Edge tabs with **Option+Tab on macOS**, with cached tab previews, keyboard navigation, and a separate recent-tab history for each window. Built with Hammerspoon and a small Edge extension.
 
 Hold **Option (⌥)** and press **Tab** to browse recently used tabs. Release Option to activate the selected tab. The black overlay shows cached page previews, site icons, and numbered cards, and scales with the Edge window.
 
@@ -57,6 +57,8 @@ Keep the selected extension folder in place after installing it. Edge loads an u
 
 Pull or download the new source, run `python3 scripts/prepare_install.py`, install the updated `dist/init.lua`, reload Hammerspoon, and reload the extension at `edge://extensions`.
 
+Long-running keyboard, application, and wake listeners have one explicit owner for the lifetime of the configuration, so Lua garbage collection cannot silently stop them. This adds no polling or extra listener.
+
 ## Current status and limitations
 
 Option+Tab uses the existing navigation event tap instead of global hotkey registrations. Focus is checked when handling the shortcut and during an open switch; unrelated idle keys do not query applications or windows. Leaving Edge cancels the panel without selecting a tab. The focused window is checked once when opening, so a transient Accessibility window lookup failure does not dismiss an already open panel.
@@ -67,11 +69,13 @@ The bridge is local to this Mac. The extension stores recent-tab metadata locall
 
 ## Diagnosing missing history or previews
 
-The local `http://127.0.0.1:27123/status` endpoint reports only connection and cache counts, without URLs, page titles, or tokens. `socketAuthenticated` and `receivedMruSnapshot` should be true. An increasing `rejectedSocketMessages` count means the running extension has a different token, even if its WebSocket is connected. After updating, reload the existing extension at `edge://extensions`; regenerating files alone does not update an already running worker. Counters are cumulative until Hammerspoon restarts.
+The local `http://127.0.0.1:27123/status` endpoint reports listener, connection, and cache state, without URLs, page titles, or tokens. If the shortcut stops responding, check `keyboardTapEnabled` and `secureInputEnabled` separately from the bridge status. `socketAuthenticated` and `receivedMruSnapshot` should be true. An increasing `rejectedSocketMessages` count means the running extension has a different token, even if its WebSocket is connected. After updating, reload the existing extension at `edge://extensions`; regenerating files alone does not update an already running worker. Counters are cumulative until Hammerspoon restarts.
 
 Without an authenticated extension snapshot, the AppleScript fallback enumerates open tabs in browser order and has no previews. This is not recovered browsing history. Once authenticated, visit a few ordinary web pages briefly to refill the in-memory preview cache; protected browser pages may have no preview.
 
 See the [2026-10-24 incident report](docs/incidents/2026-10-24-mru-preview-authentication.md) for the diagnosis and verified recovery of a credential mismatch that produced tab-strip ordering and missing previews.
+
+See also the [shortcut listener lifetime incident](docs/incidents/2026-10-24-shortcut-listener-lifetime.md) for the garbage-collection regression and its fix.
 
 ## Development and checks
 
@@ -79,6 +83,7 @@ From `edge-extension`:
 
 ```sh
 python3 tests/run_lua_tests.py ../init.lua
+python3 tests/run_lua_tests.py ../init.lua tests/test_lifecycle.lua
 node --input-type=module -e 'import("./tests/test_background.mjs").then(async m => console.log(await m.runTests(process.cwd())))'
 ```
 

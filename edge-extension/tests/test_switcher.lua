@@ -64,10 +64,14 @@ hs = {
         return c
     end },
     eventtap = { checkKeyboardModifiers = function() return modifiers end,
+        isSecureInputEnabled = function() return false end,
         event = { types = { keyDown = 1, keyUp = 2, flagsChanged = 3 },
             properties = { keyboardEventAutorepeat = 1 } },
         new = function(_, callback)
-            tapCount = tapCount + 1; navigationCallback = callback; return object()
+            tapCount = tapCount + 1; navigationCallback = callback
+            local tap = object()
+            function tap:isEnabled() return true end
+            return tap
         end },
     keycodes = { map = keys },
     hotkey = { new = function(mods, key, callback)
@@ -316,6 +320,7 @@ print("Lua behavior checks passed: Edge-only shortcuts, release/focus races, pas
 clock = clock + 20
 local beforeStatus = httpCallback("GET", "/status")
 assert(not beforeStatus.socketAuthenticated)
+assert(beforeStatus.keyboardTapEnabled and not beforeStatus.secureInputEnabled)
 websocketCallback({ token = "old-token", type = "heartbeat" })
 local rejectedStatus = httpCallback("GET", "/status")
 assert(rejectedStatus.rejectedSocketMessages == beforeStatus.rejectedSocketMessages + 1)

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Rename the project to EdgeRecentTabs and describe its Microsoft Edge, macOS, recently used tabs, and preview features directly.
+- Keep keyboard, application, and wake listeners alive across Lua garbage collection; add a lifecycle regression that fails on the previous implementation. No watchdog polling was added.
+- Report keyboard tap and Secure Input state alongside bridge diagnostics.
+
 - Document the [2026-10-24 MRU and preview incident](docs/incidents/2026-10-24-mru-preview-authentication.md), including the stale-worker credential mismatch, fallback behavior, and end-to-end recovery evidence.
 
 - Report authenticated bridge state and cache counts at `/status`; rejected WebSocket credentials no longer mark the connection healthy.

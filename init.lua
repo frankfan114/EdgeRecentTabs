@@ -1,5 +1,5 @@
 ------------------------------------------------------------
--- Edge MRU Tab Switcher
+-- EdgeRecentTabs
 -- Window-scoped MRU + cached previews + wake recovery
 ------------------------------------------------------------
 
@@ -593,6 +593,9 @@ local function startBridge()
             headers["Content-Type"] = "application/json"
             return hs.json.encode({
                 socketAuthenticated = bridgeSocketIsReady(),
+                keyboardTapEnabled = EdgeRecentTabs ~= nil
+                    and EdgeRecentTabs.navigationTap:isEnabled() or false,
+                secureInputEnabled = hs.eventtap.isSecureInputEnabled(),
                 acceptedSocketMessages = bridgeDiagnostics.accepted,
                 rejectedSocketMessages = bridgeDiagnostics.rejected,
                 invalidSocketMessages = bridgeDiagnostics.invalid,
@@ -1292,6 +1295,15 @@ wakeWatcher = hs.caffeinate.watcher.new(function(event)
     end
 end)
 wakeWatcher:start()
+
+-- A running native listener retains its callback, not the Lua userdata itself.
+-- Keep one global owner so GC cannot silently stop the tap or its recovery watchers.
+-- hs.reload() resets this Lua state and releases the previous owner automatically.
+EdgeRecentTabs = {
+    navigationTap = navigationTap,
+    appWatcher = appWatcher,
+    wakeWatcher = wakeWatcher,
+}
 
 ------------------------------------------------------------
 -- Reload shortcut

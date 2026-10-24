@@ -2,6 +2,7 @@ Run from `edge-extension`:
 
 ```sh
 python3 tests/run_lua_tests.py ../init.lua
+python3 tests/run_lua_tests.py ../init.lua tests/test_lifecycle.lua
 node --input-type=module -e 'import("./tests/test_background.mjs").then(async m => console.log(await m.runTests(process.cwd())))'
 ```
 
@@ -14,3 +15,5 @@ The JavaScript checks execute the extension worker against browser mocks and cov
 Bridge tests also verify that rejected or missing credentials cannot make a socket healthy, diagnostics contain only aggregate state, and authenticated activations preserve visit order. The worker tests execute a generated `bridge-token.js` when present (using a test-only fixture for a clean checkout) and verify that MRU snapshots follow visit order rather than tab indices.
 
 From the project root, `python3 scripts/test_prepare_install.py` validates installation generation in an isolated temporary directory, including credential alignment, repeat runs, and regeneration after deleting `dist`. It does not read the installed Hammerspoon configuration or live private tokens.
+
+The separate lifecycle suite models native callback references and weak listener ownership. It forces full garbage collection, verifies that all three persistent listeners remain active, then releases their owner and verifies cleanup. It intentionally avoids keeping test-owned strong references to listeners, which would conceal this class of failure.

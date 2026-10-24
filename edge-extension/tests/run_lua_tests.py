@@ -25,7 +25,7 @@ try:
     if not result:
         result = runtime.lua_pcallk(state, 0, 0, 0, 0, None)
     if not result:
-        result = runtime.luaL_loadfilex(state, str(Path(__file__).with_name("test_switcher.lua")).encode(), None)
+        result = runtime.luaL_loadfilex(state, str(Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else Path(__file__).with_name("test_switcher.lua")).encode(), None)
     if not result:
         result = runtime.lua_pcallk(state, 0, 0, 0, 0, None)
     if result:
