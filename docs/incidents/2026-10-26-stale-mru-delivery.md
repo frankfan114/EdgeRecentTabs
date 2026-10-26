@@ -44,7 +44,15 @@ The previously failing wake test now passes: nine wake/display/unlock notificati
 - After continued normal browsing, `/status` reported **459 MRU updates**, `lastMruTransport: "websocket"`, `mruSource: "live"`, a healthy authenticated socket, an enabled keyboard tap, and zero rejected messages. This is evidence of ongoing live updates, not just a successful reconnect snapshot.
 - Prepared three temporary tabs in tab-strip order A/B/C, then visited A/C/B. Automated shortcut synthesis was inconclusive. The user then pressed Option+Tab on the physical keyboard and confirmed it selected C; a subsequent Edge UI observation also showed `example.com/#mru-c`. This verifies visit order rather than tab-strip order with the installed build.
 
-Actual system sleep/wake was not forced during the user's work. Repeated wake-event recovery is covered by the regression suite; another physical sleep/wake cycle remains a real-world validation limit.
+The user subsequently reported that a real lock/unlock cycle still worked, but clarified that previous failures generally appeared after **about one day of use**. This short lock/unlock success does not establish full-day stability or verify system sleep/resume.
+
+## Long-session follow-up
+
+The current process was inspected without reloading: it still reported authenticated WebSocket delivery, an enabled tap, 511 history updates, and zero rejected or invalid messages. No recurrence was observed at that check.
+
+A fake-clock regression now advances through at least 24 hours, alternating an hour of browsing and an hour of idle time. It verifies 4,320 visits, 12 idle hours, 24 injected silent-socket recoveries, an independent receiver's MRU order, exactly one heartbeat, and bounded timer/history/preview/icon collections. It passed without production-code changes.
+
+This is accelerated logic testing, not a real 24-hour browser/OS endurance or heap-memory measurement. Browser suspension, OS resource pressure, and other native long-uptime effects remain unverified. The live configuration was deliberately left running without another reload to preserve any future failure state.
 
 ## Reference
 

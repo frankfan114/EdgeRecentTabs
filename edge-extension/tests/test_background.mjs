@@ -62,7 +62,7 @@ export async function runTests(root) {
       async convertToBlob() { return new Blob(["small"], { type: "image/jpeg" }); }
     },
     btoa: (value) => Buffer.from(value, "binary").toString("base64"),
-    setTimeout(callback, delay) { const id = ++timerSerial; timeouts.set(id, { callback, delay }); return id; },
+    setTimeout(callback, delay) { const id = ++timerSerial; timeouts.set(id, { callback, delay, dueAt: testNow + delay }); return id; },
     clearTimeout(id) { timeouts.delete(id); },
     setInterval(callback, delay) { const id = ++timerSerial; intervals.set(id, { callback, delay }); return id; },
     clearInterval(id) { intervals.delete(id); },
@@ -299,5 +299,71 @@ export async function runTests(root) {
   firstSocket.onclose();
   assert.equal(api.connection(), nextSocket, "A late close from an old socket cannot erase its replacement");
   assert.equal(intervals.size, 1, "Recovery must not accumulate heartbeat timers");
+  // Advance at least one day without real waiting. This exercises timer/state
+  // lifetime, not native OS suspension, browser memory pressure, or real uptime.
+  api.setMru(tabs);
+  let expectedOrder = tabs.map((tab) => tab.id);
+  let deliveredOrder = [...expectedOrder];
+  messages.length = 0;
+  const consumeMessages = () => {
+    for (const message of messages) {
+      if (message.type === "mruSnapshot") {
+        deliveredOrder = message.tabs.map((tab) => tab.tabId);
+      } else if (["activated", "updated", "focusChanged"].includes(message.type)) {
+        deliveredOrder = [message.tabId, ...deliveredOrder.filter((id) => id !== message.tabId)].slice(0, 100);
+      }
+    }
+    messages.length = 0;
+  };
+  const runDueTimers = async () => {
+    for (const [id, timer] of [...timeouts]) {
+      if (timer.dueAt <= testNow) {
+        timeouts.delete(id);
+        await timer.callback();
+      }
+    }
+    await Promise.resolve();
+  };
+  let simulatedVisits = 0;
+  let simulatedRecoveries = 0;
+  for (let tick = 1; tick <= 17280; tick++) {
+    testNow += 5000;
+    await runDueTimers();
+    let liveSocket = api.connection();
+    if (tick % 720 === 0) {
+      // Hourly silence: send() still succeeds, but server replies stop.
+      testNow += 15000;
+      [...intervals.values()][0].callback();
+      assert.equal(api.connection(), null);
+      testNow += 750;
+      await runDueTimers();
+      liveSocket = api.connection();
+      assert(liveSocket);
+      await liveSocket.onopen();
+      simulatedRecoveries += 1;
+    } else {
+      await liveSocket.onmessage({ data: JSON.stringify({ type: "heartbeatAck", token: context.EDGE_MRU_LOCAL_TOKEN }) });
+      [...intervals.values()][0].callback();
+    }
+    // Alternate an hour of browsing and an hour without any visits.
+    if (Math.floor((tick - 1) / 720) % 2 === 0 && tick % 2 === 0) {
+      const id = 1 + ((simulatedVisits * 7) % tabs.length);
+      for (const tab of tabs) tab.active = tab.id === id;
+      await api.activate(id);
+      expectedOrder = [id, ...expectedOrder.filter((oldId) => oldId !== id)];
+      simulatedVisits += 1;
+    }
+    if (tick % 31 === 0) await api.refresh(tabs[tick % tabs.length].id);
+    consumeMessages();
+    assert.deepEqual(deliveredOrder, expectedOrder, `MRU drift at simulated tick ${tick}`);
+    assert.equal(intervals.size, 1, "Long sessions must retain exactly one heartbeat");
+    assert(timeouts.size <= 3, "Timeouts must not accumulate over a day");
+    assert(api.state().mruTabs.length <= 100);
+    assert(api.previews().size <= 50 && api.state().faviconCache.size <= 100);
+    assert(api.state().pendingFavicons.size <= tabs.length);
+  }
+  assert.equal(simulatedVisits, 4320);
+  assert.equal(simulatedRecoveries, 24);
+  console.log("Simulated-day checks passed: 4320 visits, 12 idle hours, 24 stalled-socket recoveries, no MRU drift or timer/cache growth (not a real-time endurance test)");
   return "JavaScript checks passed: visit-order delivery, HTTP failure, heartbeat recovery, reconnect replay, icons, previews, and bounded caches";
 }

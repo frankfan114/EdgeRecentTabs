@@ -21,3 +21,5 @@ The separate lifecycle suite models native callback references and weak listener
 Transport regressions simulate failed HTTP with a working socket, require live visit messages without per-visit HTTP, verify authenticated heartbeat replies, retire silent sockets after 15 seconds, replay visit order on reconnect, ignore late callbacks from replaced sockets, and ensure only one heartbeat timer remains. Lua tests distinguish history freshness from connection health.
 
 Wake regressions deliver repeated system/display/unlock events and assert that recovery preserves exactly one listening server without stopping or rebinding its port; live updates must continue afterward.
+
+The simulated-day check advances a fake clock through at least 24 hours, alternating browsing and idle periods. It checks 4,320 visits, 12 idle hours, 24 silent-socket recoveries, receiver-side order, and bounded timer/cache collections. This runs without real waiting and is not a native 24-hour endurance or memory benchmark.
