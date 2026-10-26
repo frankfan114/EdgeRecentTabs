@@ -42,7 +42,7 @@ The previously failing wake test now passes: nine wake/display/unlock notificati
 - Installed `dist/init.lua` after backing up the previous configuration; retained the existing bridge token. The installed file matches the generated build.
 - Reloaded Hammerspoon from its console and the existing unpacked extension from Edge. The extension UI reports version **1.6.1**.
 - After continued normal browsing, `/status` reported **459 MRU updates**, `lastMruTransport: "websocket"`, `mruSource: "live"`, a healthy authenticated socket, an enabled keyboard tap, and zero rejected messages. This is evidence of ongoing live updates, not just a successful reconnect snapshot.
-- Prepared three temporary tabs in tab-strip order A/B/C, then visited A/C/B. The expected next Option+Tab target is C. Automated shortcut synthesis did not change the active tab, so it is not counted as a successful physical-keyboard test.
+- Prepared three temporary tabs in tab-strip order A/B/C, then visited A/C/B. Automated shortcut synthesis was inconclusive. The user then pressed Option+Tab on the physical keyboard and confirmed it selected C; a subsequent Edge UI observation also showed `example.com/#mru-c`. This verifies visit order rather than tab-strip order with the installed build.
 
 Actual system sleep/wake was not forced during the user's work. Repeated wake-event recovery is covered by the regression suite; another physical sleep/wake cycle remains a real-world validation limit.
 
