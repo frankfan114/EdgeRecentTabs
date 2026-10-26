@@ -23,6 +23,12 @@ export async function runTests(root) {
   const captures = [];
   const scaledSizes = [];
   let focused = true;
+  let testNow = 100000;
+  let timerSerial = 0;
+  const timeouts = new Map();
+  const intervals = new Map();
+  let bridgeRequests = 0;
+  let bridgeFetch = async () => ({ ok: true });
   let bitmapsClosed = 0;
   let captureVisible = async () => "data:image/jpeg;base64,cHJldmlldw==";
   let fetchFavicon = async () => ({ ok: true, blob: async () => new Blob(["png"], { type: "image/png" }) });
@@ -33,10 +39,11 @@ export async function runTests(root) {
     static CONNECTING = 0;
     readyState = 1;
     send(message) { messages.push(JSON.parse(message)); }
-    close() { this.readyState = 3; }
+    close() { this.readyState = 3; this.onclose?.(); }
   }
   const context = vm.createContext({
     URL, Blob, AbortSignal, WebSocket: Socket,
+    Date: class extends Date { static now() { return testNow; } },
     importScripts: (name) => {
       assert.equal(name, "bridge-token.js");
       try {
@@ -55,7 +62,10 @@ export async function runTests(root) {
       async convertToBlob() { return new Blob(["small"], { type: "image/jpeg" }); }
     },
     btoa: (value) => Buffer.from(value, "binary").toString("base64"),
-    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+    setTimeout(callback, delay) { const id = ++timerSerial; timeouts.set(id, { callback, delay }); return id; },
+    clearTimeout(id) { timeouts.delete(id); },
+    setInterval(callback, delay) { const id = ++timerSerial; intervals.set(id, { callback, delay }); return id; },
+    clearInterval(id) { intervals.delete(id); },
     fetch: async (url) => {
       if (String(url).startsWith("data:image/")) {
         return { blob: async () => new Blob(["preview"], { type: "image/jpeg" }) };
@@ -64,7 +74,8 @@ export async function runTests(root) {
         faviconRequests.push(String(url));
         return fetchFavicon(url);
       }
-      return { ok: true };
+      bridgeRequests += 1;
+      return bridgeFetch(url);
     },
     chrome: {
       runtime: { getURL: (url) => `chrome-extension://test${url}`,
@@ -96,6 +107,7 @@ export async function runTests(root) {
     refresh: refreshMruMetadata, activate: publishTab, snapshot: publishSnapshot,
     capture: captureThumbnail, remember: rememberThumbnail, cached: publishCachedThumbnails,
     previews: () => thumbnailCache,
+    connection: () => socket, event: publishEvent,
   })`, context);
   await api.ready;
   await Promise.resolve(); // Initial socket setup.
@@ -203,6 +215,20 @@ export async function runTests(root) {
   const mruSnapshot = messages.filter((m) => m.type === "mruSnapshot").at(-1);
   assert.deepEqual(mruSnapshot.tabs.slice(0, 3).map((tab) => tab.tabId), [6, 3, 8]);
 
+  // A live socket must carry visits even when separate HTTP requests fail.
+  // Otherwise Lua stays on its initial snapshot until Hammerspoon reloads.
+  bridgeFetch = async () => { throw new Error("HTTP connection unavailable"); };
+  const beforeVisits = messages.length;
+  const beforeHttp = bridgeRequests;
+  await api.activate(8);
+  await api.activate(3);
+  await api.activate(6);
+  const visits = messages.slice(beforeVisits).filter((message) => message.type === "activated");
+  assert.deepEqual(visits.map((message) => message.tabId), [8, 3, 6],
+    "Live visits must reach Hammerspoon on the existing socket when HTTP fails");
+  assert.equal(bridgeRequests, beforeHttp, "A connected bridge needs no per-visit HTTP requests");
+  bridgeFetch = async () => ({ ok: true });
+
   // Preview capture remains asynchronous, resized, and limited to a focused active tab.
   api.setMru(tabs);
   settings = { maxTabs: 3, tabScope: "current" };
@@ -235,5 +261,43 @@ export async function runTests(root) {
   assert.equal(cached.length, 3);
   assert(cached.every((m) => m.tabId <= 9));
   assert.equal(captures.length, beforeCapture, "Replaying previews must use the cache");
-  return "JavaScript checks passed: generated config, visit-order MRU, icons, previews, bounded caches, focus, races, and failures";
+  // Heartbeats reuse one timer, require authenticated replies, and recover silently
+  // stalled sockets even when send() still succeeds after sleep/network changes.
+  const firstSocket = api.connection();
+  await firstSocket.onopen();
+  assert.equal(intervals.size, 1);
+  const heartbeat = [...intervals.values()][0];
+  assert.equal(heartbeat.delay, 5000);
+  for (let i = 0; i < 4; i++) {
+    testNow += 5000;
+    await firstSocket.onmessage({ data: JSON.stringify({ type: "heartbeatAck", token: context.EDGE_MRU_LOCAL_TOKEN }) });
+    heartbeat.callback();
+    assert.equal(api.connection(), firstSocket);
+  }
+  await api.activate(8);
+  await api.activate(3);
+  await api.activate(6);
+  testNow += 15000;
+  await firstSocket.onmessage({ data: JSON.stringify({ type: "heartbeatAck", token: "stale-token" }) });
+  heartbeat.callback();
+  assert.equal(api.connection(), null, "Missing valid replies must retire a half-open socket");
+  assert.equal(intervals.size, 0, "A disconnected socket must release its heartbeat");
+  bridgeFetch = async () => ({ ok: false });
+  assert.equal(await api.event({ type: "focusedWindow", windowId: 1 }), false);
+  bridgeFetch = async () => ({ ok: true });
+  assert.equal(await api.event({ type: "focusedWindow", windowId: 1 }), true);
+  const reconnect = [...timeouts.entries()].find(([, timer]) => timer.delay === 750);
+  assert(reconnect, "A failed connection must schedule recovery");
+  timeouts.delete(reconnect[0]); reconnect[1].callback();
+  const nextSocket = api.connection();
+  assert(nextSocket && nextSocket !== firstSocket);
+  const beforeReconnect = messages.length;
+  await nextSocket.onopen();
+  const replay = messages.slice(beforeReconnect).find((message) => message.type === "mruSnapshot");
+  assert.deepEqual(replay.tabs.slice(0, 3).map((tab) => tab.tabId), [6, 3, 8],
+    "Automatic reconnection must replay actual visit order");
+  firstSocket.onclose();
+  assert.equal(api.connection(), nextSocket, "A late close from an old socket cannot erase its replacement");
+  assert.equal(intervals.size, 1, "Recovery must not accumulate heartbeat timers");
+  return "JavaScript checks passed: visit-order delivery, HTTP failure, heartbeat recovery, reconnect replay, icons, previews, and bounded caches";
 }

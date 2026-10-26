@@ -15,7 +15,8 @@ local otherApplication = { bundleID = function() return "other" end,
 local screen = { frame = function() return screenFrame end }
 local window = { screen = function() return screen end, frame = function() return windowFrame end,
     application = function() return windowOwnerEdge and edgeApplication or otherApplication end }
-local navigationCallback, applicationCallback, httpCallback, websocketCallback
+local navigationCallback, applicationCallback, httpCallback, websocketCallback, wakeCallback
+local serverCreates, serverStarts, serverStops = 0, 0, 0
 local frontmostReads, windowReads, tapCount = 0, 0, 0
 local function object()
     return setmetatable({}, { __index = function(_, key)
@@ -83,12 +84,16 @@ hs = {
     end,
         bind = function() end },
     httpserver = { new = function()
+        serverCreates = serverCreates + 1
         local server = object()
+        function server:start() serverStarts = serverStarts + 1; return self end
+        function server:stop() serverStops = serverStops + 1; return self end
         function server:websocket(path, callback) websocketCallback = callback; return self end
         return server
     end },
     json = { encode = function(payload) return payload end, decode = function(payload) return payload end },
-    caffeinate = { watcher = { new = object } },
+    caffeinate = { watcher = { systemDidWake = 1, screensDidWake = 2, screensDidUnlock = 3,
+        new = function(callback) wakeCallback = callback; return object() end } },
     alert = { show = function() end },
     osascript = { applescript = function() error("Unexpected AppleScript fallback") end },
 }
@@ -350,3 +355,39 @@ httpCallback("POST", "/edge-mru", {}, { token = tool.token, type = "activated",
 local _, _, _, _, _, _, updatedOrder = tool.state()
 assert(updatedOrder[1].edgeTabID == "6" and updatedOrder[2].edgeTabID == "8" and updatedOrder[3].edgeTabID == "3")
 print("MRU checks passed: extension order and authenticated activation updates")
+
+-- The same live update handler serves WebSocket and the legacy HTTP fallback.
+local statusBefore = httpCallback("GET", "/status")
+websocketCallback({ token = tool.token, type = "activated",
+    tabId = 3, windowId = 1, index = 2, title = "Tab 3", url = "https://example.com/3", windowFocused = true })
+local _, _, _, _, _, _, socketOrder = tool.state()
+assert(socketOrder[1].edgeTabID == "3" and socketOrder[2].edgeTabID == "6" and socketOrder[3].edgeTabID == "8")
+local liveStatus = httpCallback("GET", "/status")
+assert(liveStatus.mruSource == "live" and liveStatus.lastMruTransport == "websocket")
+assert(liveStatus.mruUpdates == statusBefore.mruUpdates + 1 and liveStatus.lastMruUpdateAgeSeconds == 0)
+clock = clock + 7
+local ack = websocketCallback({ token = tool.token, type = "heartbeat" })
+assert(ack.type == "heartbeatAck" and ack.token == tool.token)
+local heartbeatStatus = httpCallback("GET", "/status")
+assert(heartbeatStatus.mruUpdates == liveStatus.mruUpdates and heartbeatStatus.lastMruUpdateAgeSeconds == 7,
+    "A heartbeat must not pretend that tab history was updated")
+assert(websocketCallback({ token = "old-token", type = "heartbeat" }) == "")
+websocketCallback({ token = tool.token, type = "removed", tabId = 6 })
+local _, _, _, _, _, _, afterRemoval = tool.state()
+assert(#afterRemoval == 2 and afterRemoval[1].edgeTabID == "3" and afterRemoval[2].edgeTabID == "8")
+print("Live MRU checks passed: socket updates/removals, authenticated heartbeat replies, and independent history freshness")
+
+-- Sleep, display wake and unlock can arrive in a burst. Keep the listening socket
+-- instead of stop/start races that produce "Address already in use" on native macOS.
+local createsBeforeWake, startsBeforeWake, stopsBeforeWake = serverCreates, serverStarts, serverStops
+for _ = 1, 3 do
+    for _, wakeEvent in ipairs({ 1, 2, 3 }) do wakeCallback(wakeEvent) end
+    timers[#timers].callback()
+end
+assert(serverCreates == createsBeforeWake and serverStarts == startsBeforeWake and serverStops == stopsBeforeWake,
+    "Wake recovery must retain the server instead of rebinding its port")
+websocketCallback({ token = tool.token, type = "activated", tabId = 8, windowId = 1,
+    title = "Tab 8", url = "https://example.com/8", windowFocused = true })
+local _, _, _, _, _, _, afterWake = tool.state()
+assert(afterWake[1].edgeTabID == "8", "Live history must still update after repeated wake events")
+print("Wake checks passed: retain one listening server through repeated sleep/display/unlock events")

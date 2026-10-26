@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Preserve the local listening server through wake/unlock instead of rebinding its port; native logs showed repeated address-in-use failures before MRU froze.
+
+- Send live tab visits through the existing WebSocket, with HTTP only as a bounded fallback; this prevents silent HTTP failures from freezing history behind a healthy socket.
+- Require authenticated heartbeat replies and reconnect stalled sockets using the existing timer; restore MRU automatically on reconnection.
+- Add independent history-update diagnostics and transport/recovery regressions. See the [2026-10-26 investigation](docs/incidents/2026-10-26-stale-mru-delivery.md).
+
 - Rename the project to EdgeRecentTabs and describe its Microsoft Edge, macOS, recently used tabs, and preview features directly.
 - Keep keyboard, application, and wake listeners alive across Lua garbage collection; add a lifecycle regression that fails on the previous implementation. No watchdog polling was added.
 - Report keyboard tap and Secure Input state alongside bridge diagnostics.

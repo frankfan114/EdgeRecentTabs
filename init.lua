@@ -58,6 +58,7 @@ local pendingSwitch = nil
 local pendingSwitchTimer = nil
 local requestCounter = 0
 local restoredMruSnapshot = false
+local mruDiagnostics = { updates = 0, lastUpdateAt = 0, lastTransport = "", source = "empty" }
 local seedTask = nil
 
 local US = string.char(31)
@@ -126,6 +127,13 @@ end
 -- Chromium windowId. Filtering by window preserves each window's own MRU
 -- order while also supporting an optional all-windows mode.
 ------------------------------------------------------------
+
+local function recordMruUpdate(source, transport)
+    mruDiagnostics.updates = mruDiagnostics.updates + 1
+    mruDiagnostics.lastUpdateAt = hs.timer.secondsSinceEpoch()
+    mruDiagnostics.lastTransport = transport
+    mruDiagnostics.source = source
+end
 
 local function bumpRecent(tab)
     tab = normalizeTab(tab)
@@ -511,8 +519,34 @@ local function applySettings(payload)
     end
 end
 
-local function handleBridgePayload(payload)
+local function handleBridgePayload(payload, transport)
     if type(payload) ~= "table" then return end
+
+    if payload.type == "removed" then
+        removeEdgeTab(payload.tabId)
+        recordMruUpdate("live", transport)
+        return
+    end
+
+    if payload.type == "activated" or payload.type == "updated" or payload.type == "focusChanged" then
+        local url = cleanText(payload.url)
+        if url == "" then return end
+        local title = cleanText(payload.title)
+        local tab = {
+            edgeTabID = tostring(payload.tabId or ""),
+            edgeWindowID = tostring(payload.windowId or ""),
+            edgeIndex = tonumber(payload.index),
+            text = title ~= "" and title or url,
+            subText = url,
+            url = url,
+        }
+        bumpRecent(tab)
+        recordMruUpdate("live", transport)
+        if payload.windowFocused == true or payload.type == "focusChanged" then
+            activeEdgeWindowID = tab.edgeWindowID
+        end
+        return
+    end
 
     if payload.type == "heartbeat" then
         bridgeSocketLastSeen = nowSeconds()
@@ -535,6 +569,7 @@ local function handleBridgePayload(payload)
     if payload.type == "mruSnapshot" then
         bridgeSocketLastSeen = nowSeconds()
         applyMruSnapshot(payload.tabs)
+        recordMruUpdate("snapshot", transport)
         return
     end
 
@@ -601,6 +636,11 @@ local function startBridge()
                 invalidSocketMessages = bridgeDiagnostics.invalid,
                 lastSocketMessage = bridgeDiagnostics.lastType,
                 receivedMruSnapshot = restoredMruSnapshot,
+                mruSource = mruDiagnostics.source,
+                mruUpdates = mruDiagnostics.updates,
+                lastMruTransport = mruDiagnostics.lastTransport,
+                lastMruUpdateAgeSeconds = mruDiagnostics.lastUpdateAt > 0
+                    and math.max(0, nowSeconds() - mruDiagnostics.lastUpdateAt) or -1,
                 recentTabCount = #recentTabs,
                 previewCount = previewCount,
             }), 200, headers
@@ -619,43 +659,9 @@ local function startBridge()
             return "forbidden", 403, bridgeHeaders()
         end
 
-        if payload.type == "removed" then
-            removeEdgeTab(payload.tabId)
-            return "ok", 200, bridgeHeaders()
-        end
-
-        if payload.type == "focusedWindow" then
-            local id = tostring(payload.windowId or "")
-            if id ~= "" and id ~= "-1" then activeEdgeWindowID = id end
-            return "ok", 200, bridgeHeaders()
-        end
-
-        if payload.type == "activated"
-            or payload.type == "updated"
-            or payload.type == "focusChanged"
-        then
-            local url = cleanText(payload.url)
-            local title = cleanText(payload.title)
-            if url == "" then return "ignored", 200, bridgeHeaders() end
-
-            local tab = {
-                edgeTabID = tostring(payload.tabId or ""),
-                edgeWindowID = tostring(payload.windowId or ""),
-                edgeIndex = tonumber(payload.index),
-                text = title ~= "" and title or url,
-                subText = url,
-                url = url,
-            }
-            bumpRecent(tab)
-
-            if payload.windowFocused == true or payload.type == "focusChanged" then
-                activeEdgeWindowID = tab.edgeWindowID
-            end
-
-            return "ok", 200, bridgeHeaders()
-        end
-
-        return "ignored", 200, bridgeHeaders()
+        -- Keep the HTTP fallback compatible with older extension workers.
+        handleBridgePayload(payload, "http")
+        return "ok", 200, bridgeHeaders()
     end)
 
     bridgeServer:websocket("/ws", function(message)
@@ -667,7 +673,10 @@ local function startBridge()
         else
             bridgeDiagnostics.accepted = bridgeDiagnostics.accepted + 1
             bridgeDiagnostics.lastType = tostring(payload.type or "")
-            handleBridgePayload(payload)
+            handleBridgePayload(payload, "websocket")
+            if payload.type == "heartbeat" then
+                return hs.json.encode({ type = "heartbeatAck", token = BRIDGE_TOKEN })
+            end
         end
         return ""
     end)
@@ -735,6 +744,7 @@ local function seedRecentTabs()
 
         if #found > 0 and not restoredMruSnapshot then
             recentTabs = found
+            mruDiagnostics.source = "tab-strip-fallback"
         end
     end, { "-e", seedScript })
 
@@ -1280,9 +1290,10 @@ local function scheduleWakeRecovery()
 
         hideOverlay()
         clearPendingSwitch()
-        bridgeSocketLastSeen = 0
         navigationTap:start()
-        startBridge()
+        -- Keep the listening server across wake/unlock. Rebinding immediately
+        -- after stop() can fail with "Address already in use". The extension's
+        -- heartbeat detects stale connections and replays MRU on reconnect.
     end)
 end
 

@@ -23,10 +23,12 @@ const PREVIEW_MAX_WIDTH = 520;
 const PREVIEW_MAX_HEIGHT = 320;
 const PREVIEW_CACHE_LIMIT = 50;
 const FAVICON_CACHE_LIMIT = 100;
+const SOCKET_ACK_TIMEOUT_MS = 15000;
 
 let socket = null;
 let reconnectTimer = null;
 let heartbeatTimer = null;
+let lastSocketAckAt = 0;
 let persistTimer = null;
 let mruTabs = [];
 let previewTimer = null;
@@ -59,15 +61,20 @@ async function getSettings() {
   };
 }
 
-async function post(payload) {
+async function publishEvent(payload) {
+  // Keep history updates on the same connection as snapshots and previews.
+  if (sendSocket(payload)) return true;
   try {
-    await fetch(`${BRIDGE}/edge-mru`, {
+    const response = await fetch(`${BRIDGE}/edge-mru`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: TOKEN, ...payload })
+      body: JSON.stringify({ token: TOKEN, ...payload }),
+      signal: AbortSignal.timeout(2000)
     });
+    return response.ok;
   } catch (_) {
-    // Hammerspoon may be asleep/reloading. WebSocket reconnect will restore state.
+    // Reconnection replays authoritative history; do not block later visits.
+    return false;
   }
 }
 
@@ -200,13 +207,13 @@ async function publishFocusedWindow() {
   try {
     const win = await chrome.windows.getLastFocused();
     if (win && win.id != null) {
-      sendSocket({ type: "focusedWindow", windowId: win.id });
-      await post({ type: "focusedWindow", windowId: win.id });
+      await publishEvent({ type: "focusedWindow", windowId: win.id });
     }
   } catch (_) {}
 }
 
 async function publishTab(tabId, type = "activated") {
+  await mruReady;
   try {
     const tab = await chrome.tabs.get(Number(tabId));
     if (!tab || tab.id == null || !tab.url) return;
@@ -219,7 +226,7 @@ async function publishTab(tabId, type = "activated") {
       windowFocused = Boolean(win?.focused);
     } catch (_) {}
 
-    await post({
+    await publishEvent({
       type,
       tabId: tab.id,
       windowId: tab.windowId,
@@ -243,8 +250,7 @@ async function publishFocusedTab(type = "focusChanged", explicitWindowId = null)
 
     if (tabs[0]?.id != null) {
       await publishTab(tabs[0].id, type);
-      sendSocket({ type: "focusedWindow", windowId: tabs[0].windowId });
-      await post({ type: "focusedWindow", windowId: tabs[0].windowId });
+      await publishEvent({ type: "focusedWindow", windowId: tabs[0].windowId });
       scheduleThumbnailCapture(tabs[0].id);
       void publishFaviconsForScope();
     }
@@ -430,12 +436,24 @@ function scheduleReconnect() {
   }, 750);
 }
 
-function startHeartbeat() {
+function disconnectSocket(connection) {
+  if (socket !== connection) return;
+  socket = null;
   if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+  try { connection.close(); } catch (_) {}
+  scheduleReconnect();
+}
+
+function startHeartbeat(connection) {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  lastSocketAckAt = Date.now();
   heartbeatTimer = setInterval(() => {
-    if (!sendSocket({ type: "heartbeat", ts: Date.now() })) {
-      try { socket?.close(); } catch (_) {}
-      scheduleReconnect();
+    if (socket !== connection) return;
+    // send() succeeding only means bytes were queued. Require a server reply.
+    if (Date.now() - lastSocketAckAt >= SOCKET_ACK_TIMEOUT_MS
+        || !sendSocket({ type: "heartbeat", ts: Date.now() })) {
+      disconnectSocket(connection);
     }
   }, 5000);
 }
@@ -443,10 +461,12 @@ function startHeartbeat() {
 function connectSocket() {
   try {
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
-    socket = new WebSocket(WS_URL);
+    const connection = new WebSocket(WS_URL);
+    socket = connection;
 
-    socket.onopen = async () => {
-      startHeartbeat();
+    connection.onopen = async () => {
+      if (socket !== connection) return;
+      startHeartbeat(connection);
       sendSocket({ type: "heartbeat", ts: Date.now() });
       await mruReady;
       await publishSettings();
@@ -457,10 +477,12 @@ function connectSocket() {
       await publishFocusedTab("focusChanged");
     };
 
-    socket.onmessage = async (event) => {
+    connection.onmessage = async (event) => {
+      if (socket !== connection) return;
       let msg;
       try { msg = JSON.parse(event.data); } catch (_) { return; }
       if (!msg || msg.token !== TOKEN) return;
+      lastSocketAckAt = Date.now();
 
       if (msg.type === "switchTab") {
         const requestId = String(msg.requestId || "");
@@ -481,14 +503,8 @@ function connectSocket() {
       }
     };
 
-    socket.onclose = () => {
-      socket = null;
-      scheduleReconnect();
-    };
-
-    socket.onerror = () => {
-      try { socket?.close(); } catch (_) {}
-    };
+    connection.onclose = () => disconnectSocket(connection);
+    connection.onerror = () => disconnectSocket(connection);
   } catch (_) {
     socket = null;
     scheduleReconnect();
@@ -520,7 +536,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     thumbnailCache.delete(Number(tabId));
     faviconCache.delete(Number(tabId));
     pendingFavicons.delete(Number(tabId));
-    await post({ type: "removed", tabId });
+    await publishEvent({ type: "removed", tabId });
     await publishSnapshot();
   })();
 });

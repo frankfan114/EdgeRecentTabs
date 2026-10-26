@@ -17,3 +17,7 @@ Bridge tests also verify that rejected or missing credentials cannot make a sock
 From the project root, `python3 scripts/test_prepare_install.py` validates installation generation in an isolated temporary directory, including credential alignment, repeat runs, and regeneration after deleting `dist`. It does not read the installed Hammerspoon configuration or live private tokens.
 
 The separate lifecycle suite models native callback references and weak listener ownership. It forces full garbage collection, verifies that all three persistent listeners remain active, then releases their owner and verifies cleanup. It intentionally avoids keeping test-owned strong references to listeners, which would conceal this class of failure.
+
+Transport regressions simulate failed HTTP with a working socket, require live visit messages without per-visit HTTP, verify authenticated heartbeat replies, retire silent sockets after 15 seconds, replay visit order on reconnect, ignore late callbacks from replaced sockets, and ensure only one heartbeat timer remains. Lua tests distinguish history freshness from connection health.
+
+Wake regressions deliver repeated system/display/unlock events and assert that recovery preserves exactly one listening server without stopping or rebinding its port; live updates must continue afterward.
