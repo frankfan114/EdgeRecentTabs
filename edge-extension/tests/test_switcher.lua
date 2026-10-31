@@ -197,8 +197,8 @@ do
         for index, card in ipairs(refs) do
             local rect = panel.elements[card.rect]
             assert(rect.strokeColor.white == foreground)
-            assert(rect.fillColor.white == foreground)
-            near(rect.fillColor.alpha, index == selected and 0.16 or 0)
+            near(rect.fillColor.white, index == selected and background * 0.84 + foreground * 0.16 or background)
+            near(rect.fillColor.alpha, 0.65)
         end
         assert(panel.elements[refs[2].preview].image == image)
         assert(panel.elements[refs[2].preview].imageAlpha == 1)
@@ -239,8 +239,28 @@ for _, size in ipairs({ {480, 320}, {700, 950}, {1300, 400}, {1600, 1000} }) do
         fixture(count)
         local _, _, canvas, cards = tool.state()
         assert(#cards == count)
+        local rowCounts = {}
+        for i, card in ipairs(cards) do
+            local rect = canvas.elements[card.rect].frame
+            rowCounts[card.row] = (rowCounts[card.row] or 0) + 1
+            for j = i + 1, #cards do
+                local other = canvas.elements[cards[j].rect].frame
+                assert(rect.x + rect.w < other.x or other.x + other.w < rect.x
+                    or rect.y + rect.h < other.y or other.y + other.h < rect.y,
+                    "Cards must not overlap")
+            end
+            local title = canvas.elements[card.title].frame
+            assert(title.x >= rect.x and title.y >= rect.y)
+            assert(title.x + title.w <= rect.x + rect.w + 0.001)
+            assert(title.y + title.h <= rect.y + rect.h + 0.001, "Title overflowed its card")
+        end
+        local minRow, maxRow = count, 0
+        for _, n in pairs(rowCounts) do minRow = math.min(minRow, n); maxRow = math.max(maxRow, n) end
+        assert(maxRow - minRow <= 1, "Rows should be balanced, without sparse trailing rows")
         for _, element in ipairs(canvas.elements) do
             assert(element.frame.w > 0 and element.frame.h > 0)
+            assert(not (element.type == "rectangle" and element.frame.w >= canvas.bounds.w * 0.95
+                and element.frame.h >= canvas.bounds.h * 0.95), "The large background panel must be absent")
             assert(element.frame.x >= 0 and element.frame.y >= 0)
             assert(element.frame.x + element.frame.w <= canvas.bounds.w + 0.001)
             assert(element.frame.y + element.frame.h <= canvas.bounds.h + 0.001)
@@ -261,6 +281,22 @@ for _, size in ipairs({ {480, 320}, {700, 950}, {1300, 400}, {1600, 1000} }) do
             else near(math.abs(cards[target].centerX - card.centerX), best) end
         end
     end
+end
+-- Labels grow with cards, and resize retains the selected tab and MRU positions.
+do
+    windowFrame = { x = 0, y = 0, w = 600, h = 450 }
+    fixture(5)
+    local _, chosen, panel, cards, resize = tool.state()
+    local small = panel.elements[cards[1].title].textSize
+    local smallIcon = panel.elements[cards[1].icon].frame.w
+    windowFrame = { x = 0, y = 0, w = 1500, h = 950 }
+    resize.callback()
+    local _, after, _, largeCards = tool.state()
+    assert(chosen == after)
+    assert(panel.elements[largeCards[1].title].textSize > small)
+    assert(panel.elements[largeCards[1].icon].frame.w > smallIcon)
+    for i, card in ipairs(largeCards) do assert(panel.elements[card.title].text == "Tab " .. i) end
+    print("Layout checks passed: floating cards, balanced rows, no overlap, responsive labels, and MRU order")
 end
 windowFrame = { x = -100, y = 0, w = 600, h = 500 }
 fixture(5)

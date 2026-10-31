@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Remove the large switcher backdrop; use individual translucent cards with transparent gaps and a compact keyboard hint.
+- Scale tab titles, site icons, and domain labels with card size, with two-line titles on larger cards and compact labels on smaller ones.
+- Balance cards across centered rows, adapting to window shape and tab count while preserving MRU order and spatial arrow navigation.
+
 - Follow macOS light/dark appearance for the Option+Tab panel, text, selection, preview backing, and number badges. Update an open panel without changing its selection or cached previews; keep 65% background opacity in both themes.
 
 - Make the Option+Tab panel more transparent with a 65% opaque background and a softer selected-card fill; keep text, icons, and previews at full opacity.

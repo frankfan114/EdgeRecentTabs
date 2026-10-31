@@ -17,7 +17,7 @@ local FAVICON_CACHE_LIMIT = 100
 local TAB_SCOPE = "current" -- "current" or "all"
 local OVERLAY_WINDOW_WIDTH = 0.88
 local OVERLAY_WINDOW_HEIGHT = 0.80
-local OVERLAY_BACKGROUND_ALPHA = 0.65
+local CARD_BACKGROUND_ALPHA = 0.65
 local SELECTED_CARD_ALPHA = 0.16
 
 local BRIDGE_PORT = 27123
@@ -792,7 +792,9 @@ local function domainFromURL(url)
 end
 
 local function cardFillColor(selected)
-    return { white = overlayTheme.foreground, alpha = selected and SELECTED_CARD_ALPHA or 0.0 }
+    local tint = selected and SELECTED_CARD_ALPHA or 0.0
+    return { white = overlayTheme.background * (1 - tint) + overlayTheme.foreground * tint,
+        alpha = CARD_BACKGROUND_ALPHA }
 end
 
 local function cardStrokeColor(selected)
@@ -843,6 +845,40 @@ local function overlayFrameForWindow()
         y = top + (bottom - top - height) / 2, w = width, h = height }
 end
 
+-- Balance every row while keeping MRU order and similarly sized previews.
+local function layoutCards(count, width, height, gap)
+    local best, bestScore = nil, math.huge
+    for rows = 1, count do
+        local columns = math.ceil(count / rows)
+        local cardW = (width - gap * (columns - 1)) / columns
+        local cardH = (height - gap * (rows - 1)) / rows
+        if cardW > 0 and cardH > 0 then
+            -- Avoid stretched strips in wide windows and towering cards in tall ones.
+            cardW = math.min(cardW, cardH * 2.0)
+            cardH = math.min(cardH, cardW / 1.25)
+            local coverage = count * cardW * cardH / (width * height)
+            local score = (1 - coverage) + math.abs(math.log((cardW / cardH) / 1.6)) * 0.55
+                + math.max(0, 150 - cardW) / 150 + math.max(0, 100 - cardH) / 100
+            if score < bestScore then
+                bestScore = score
+                best = { rows = rows, w = cardW, h = cardH }
+            end
+        end
+    end
+    local frames = {}
+    local stackH = best.rows * best.h + (best.rows - 1) * gap
+    for row = 0, best.rows - 1 do
+        local inRow = math.floor(count / best.rows) + (row < count % best.rows and 1 or 0)
+        local rowW = inRow * best.w + (inRow - 1) * gap
+        for column = 0, inRow - 1 do
+            frames[#frames + 1] = { x = (width - rowW) / 2 + column * (best.w + gap),
+                y = (height - stackH) / 2 + row * (best.h + gap),
+                w = best.w, h = best.h, row = row }
+        end
+    end
+    return frames, (height + stackH) / 2
+end
+
 local function showOverlay()
     if #switchChoices == 0 then return end
 
@@ -852,69 +888,25 @@ local function showOverlay()
 
     local itemCount = math.min(#switchChoices, MAX_TABS)
     local outerPad = math.min(14, width * 0.03, height * 0.04)
-    local headerH = math.min(30, height * 0.08)
-    local footerH = math.min(22, height * 0.06)
-    local gap = math.min(8, width * 0.015, height * 0.015)
+    local footerH = math.min(26, height * 0.09)
+    local gap = math.min(16, width * 0.025, height * 0.025)
 
     if not overlay then overlay = hs.canvas.new(frame) else overlay:frame(frame) end
 
-    local cardsTop = outerPad + headerH
     local usableW = width - outerPad * 2
-    local usableH = height - cardsTop - outerPad - footerH
-    -- Choose the grid that fits the window's aspect ratio with readable cards.
-    local cols = 1
-    local bestScore = math.huge
-    for candidate = 1, itemCount do
-        local candidateRows = math.ceil(itemCount / candidate)
-        local cw = (usableW - gap * (candidate - 1)) / candidate
-        local ch = (usableH - gap * (candidateRows - 1)) / candidateRows
-        if cw > 0 and ch > 0 then
-            local score = math.abs(math.log((cw / ch) / 1.65))
-                + math.max(0, 150 - cw) / 50 + math.max(0, 100 - ch) / 40
-                + (candidate * candidateRows - itemCount) * 0.04
-            if score < bestScore then cols, bestScore = candidate, score end
-        end
-    end
-    local rows = math.ceil(itemCount / cols)
-    local cardW = (usableW - gap * (cols - 1)) / cols
-    local cardH = (usableH - gap * (rows - 1)) / rows
-
+    local usableH = height - outerPad * 2 - footerH - gap
+    local layout, stackBottom = layoutCards(itemCount, usableW, usableH, gap)
     local elements = {}
     overlayCardElements = {}
     overlayItemCount = itemCount
 
-    -- Translucent backing reveals the page without fading text or previews.
-    table.insert(elements, {
-        type = "rectangle",
-        action = "fill",
-        frame = { x = 0, y = 0, w = width, h = height },
-        roundedRectRadii = { xRadius = 14, yRadius = 14 },
-        fillColor = { white = overlayTheme.background, alpha = OVERLAY_BACKGROUND_ALPHA },
-        withShadow = false,
-    })
-
-    local scopeLabel = TAB_SCOPE == "current" and "Current Edge window" or "All Edge windows"
-    table.insert(elements, {
-        type = "text",
-        frame = { x = outerPad + 2, y = outerPad / 2, w = width - outerPad * 2 - 4, h = headerH },
-        text = "Edge tabs  ·  " .. scopeLabel .. "  ·  " .. tostring(itemCount),
-        textSize = math.max(9, math.min(13, headerH * 0.55)),
-        textColor = { white = overlayTheme.foreground, alpha = 1.0 },
-        textLineBreak = "truncateTail",
-    })
-
+    -- Only individual cards are painted; the space between them stays transparent.
     for i = 1, itemCount do
         local tab = switchChoices[i]
-        local row = math.floor((i - 1) / cols)
-        local col = (i - 1) % cols
-
-        local remaining = itemCount - row * cols
-        local itemsInRow = math.min(cols, remaining)
-        local rowWidth = itemsInRow * cardW + math.max(0, itemsInRow - 1) * gap
-        local rowStartX = outerPad + (usableW - rowWidth) / 2
-
-        local cx = rowStartX + col * (cardW + gap)
-        local cy = cardsTop + row * (cardH + gap)
+        local placement = layout[i]
+        local cx, cy = outerPad + placement.x, outerPad + placement.y
+        local cardW, cardH = placement.w, placement.h
+        local row = placement.row
         local selected = i == selectedIndex
 
         local rectIndex = #elements + 1
@@ -928,8 +920,15 @@ local function showOverlay()
             strokeWidth = cardStrokeWidth(selected),
         })
 
-        local previewInset = math.min(4, cardW * 0.03, cardH * 0.03)
-        local metaHeight = math.min(56, cardH * 0.38)
+        local previewInset = math.min(6, cardW * 0.03, cardH * 0.03)
+        local textPad = math.min(14, cardW * 0.045)
+        local titleSize = math.min(26, math.max(9, math.min(cardW * 0.055, cardH * 0.10)))
+        local titleLines = cardH >= 180 and cardW >= 220 and 2 or 1
+        local domainSize = math.min(14, math.max(8, titleSize * 0.68))
+        local domainH = cardH >= 100 and domainSize * 1.4 or 0
+        local titleH = titleSize * 1.35 * titleLines
+        local textGap = math.min(5, cardH * 0.02)
+        local metaHeight = titleH + domainH + textGap * 3
         local previewH = math.max(1, cardH - metaHeight - previewInset * 2)
         local previewFrame = {
             x = cx + previewInset,
@@ -971,17 +970,15 @@ local function showOverlay()
             textColor = { white = overlayTheme.foreground, alpha = 1.0 },
         })
 
-        local titleY = cy + previewInset + previewH + 3
-        local domainH = math.min(14, metaHeight * 0.30)
-        local domainY = cy + cardH - domainH - 4
-        local titleH = math.max(1, domainY - titleY - 2)
-        local iconSize = math.max(1, math.min(18, titleH, cardW * 0.12))
+        local titleY = cy + previewInset + previewH + textGap
+        local domainY = titleY + titleH + textGap
+        local iconSize = math.min(24, titleSize * 1.2)
         local favicon = faviconImages[tostring(tab.edgeTabID or "")]
         local icon = favicon and favicon.image or fallbackIcon
         local iconIndex = #elements + 1
         table.insert(elements, {
             type = "image",
-            frame = { x = cx + 8, y = titleY, w = iconSize, h = iconSize },
+            frame = { x = cx + textPad, y = titleY, w = iconSize, h = iconSize },
             image = icon,
             imageAlpha = icon and 1.0 or 0.0,
             imageScaling = "scaleProportionally",
@@ -991,22 +988,24 @@ local function showOverlay()
         local titleIndex = #elements + 1
         table.insert(elements, {
             type = "text",
-            frame = { x = cx + 8 + iconSize + 5, y = titleY,
-                w = math.max(1, cardW - iconSize - 21), h = titleH },
+            frame = { x = cx + textPad + iconSize + textGap, y = titleY,
+                w = math.max(1, cardW - textPad * 2 - iconSize - textGap), h = titleH },
             text = tab.text,
-            textSize = math.max(9, math.min(13, titleH * 0.65)),
+            textSize = titleSize,
             textColor = { white = overlayTheme.foreground, alpha = 1.0 },
-            textLineBreak = "wordWrap",
+            textLineBreak = titleLines == 2 and "wordWrap" or "truncateTail",
         })
 
-        table.insert(elements, {
-            type = "text",
-            frame = { x = cx + 9, y = domainY, w = math.max(1, cardW - 18), h = domainH },
-            text = domainFromURL(tab.url),
-            textSize = math.max(7, math.min(9, domainH * 0.65)),
-            textColor = { white = overlayTheme.foreground, alpha = 1.0 },
-            textLineBreak = "truncateMiddle",
-        })
+        if domainH > 0 then
+            table.insert(elements, {
+                type = "text",
+                frame = { x = cx + textPad, y = domainY, w = cardW - textPad * 2, h = domainH },
+                text = domainFromURL(tab.url),
+                textSize = domainSize,
+                textColor = { white = overlayTheme.foreground, alpha = 1.0 },
+                textLineBreak = "truncateMiddle",
+            })
+        end
 
         table.insert(elements, {
             type = "rectangle",
@@ -1038,15 +1037,23 @@ local function showOverlay()
         }
     end
 
+    local footerW = math.min(usableW, 360)
+    local footerY = outerPad + stackBottom + gap
+    table.insert(elements, {
+        type = "rectangle", action = "fill",
+        frame = { x = (width - footerW) / 2, y = footerY, w = footerW, h = footerH },
+        roundedRectRadii = { xRadius = footerH / 2, yRadius = footerH / 2 },
+        fillColor = { white = overlayTheme.background, alpha = CARD_BACKGROUND_ALPHA },
+    })
     table.insert(elements, {
         type = "text",
-        frame = { x = outerPad, y = height - outerPad - footerH + 3,
-            w = width - outerPad * 2, h = footerH },
+        frame = { x = (width - footerW) / 2 + 6, y = footerY + 3,
+            w = footerW - 12, h = footerH - 3 },
         text = "Hold ⌥ · Tab / arrows · 1–9 select · Esc cancel",
-        textSize = math.max(8, math.min(11, width / 48)),
+        textSize = math.max(8, math.min(11, footerW / 33)),
         textAlignment = "center",
         textLineBreak = "truncateTail",
-        textColor = { white = overlayTheme.foreground, alpha = 0.70 },
+        textColor = { white = overlayTheme.foreground, alpha = 1.0 },
     })
 
     overlay:replaceElements(elements)

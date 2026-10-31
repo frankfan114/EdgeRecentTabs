@@ -10,7 +10,11 @@ Setup, updates, troubleshooting, and development notes.
 
 `edge-extension/background.js` runs in Edge. It tracks tab history, captures previews, loads site icons, and communicates with Hammerspoon over a local bridge at `127.0.0.1:27123`. The extension's HTML, CSS, and `options.js` implement its settings popup.
 
-The Option+Tab panel follows macOS **System Settings → Appearance**, including automatic light/dark changes. Light mode uses a translucent white background with dark text; dark mode uses a translucent black background with white text. Both keep the 65% background opacity, full-opacity titles, icons and previews, and a contrasting selection outline with a subtle fill. The panel reads the system appearance each time it opens and updates if it changes while open. To adjust transparency, edit `OVERLAY_BACKGROUND_ALPHA` and `SELECTED_CARD_ALPHA` in `init.lua` (0 is transparent, 1 is opaque), then follow the update steps below.
+The Option+Tab switcher follows macOS **System Settings → Appearance**, including automatic light/dark changes. Individual cards float over the page with 65% opaque light or dark backgrounds; the space between cards is transparent. Titles, icons and previews remain fully opaque, and a contrasting outline marks the selection. The theme updates on opening and while the switcher is visible.
+
+Cards are arranged in balanced, centered rows based on the window shape and number of tabs. The layout favors readable previews and avoids sparse trailing rows while preserving recent-tab order. Titles and icons scale with card size; larger cards allow two title lines, and compact cards truncate long names. Very small cards omit the domain to leave room for the title and preview. Arrow navigation follows the closest card in the adjacent row.
+
+To adjust card transparency, edit `CARD_BACKGROUND_ALPHA` in `init.lua` (0 is transparent, 1 is opaque). `SELECTED_CARD_ALPHA` controls the strength of the selection tint. Then follow the update steps below.
 
 ## Install
 
