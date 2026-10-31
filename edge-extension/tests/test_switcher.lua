@@ -298,6 +298,31 @@ do
     for i, card in ipairs(largeCards) do assert(panel.elements[card.title].text == "Tab " .. i) end
     print("Layout checks passed: floating cards, balanced rows, no overlap, responsive labels, and MRU order")
 end
+-- Card proportions follow the available display area, including a monitor change.
+do
+    screenFrame = { x = 0, y = 0, w = 700, h = 1000 }
+    windowFrame = { x = 0, y = 0, w = 700, h = 1000 }
+    fixture(4)
+    local _, selected, panel, cards, resize = tool.state()
+    local portrait = panel.elements[cards[1].rect].frame
+    assert(portrait.h > portrait.w, "A portrait window should produce taller cards")
+    screenFrame = { x = 0, y = 0, w = 1600, h = 700 }
+    windowFrame = { x = 0, y = 0, w = 1600, h = 700 }
+    resize.callback()
+    local _, after, _, wideCards = tool.state()
+    local wide = panel.elements[wideCards[1].rect].frame
+    assert(after == selected)
+    assert(wide.w / wide.h > 2, "A wide window should produce wider cards")
+    -- A smaller screen clips the same host window and changes the card proportions.
+    screenFrame = { x = 0, y = 0, w = 600, h = 1000 }
+    resize.callback()
+    local _, _, _, clippedCards = tool.state()
+    local clipped = panel.elements[clippedCards[1].rect].frame
+    assert(clipped.w / clipped.h < wide.w / wide.h)
+    assert(panel.bounds.x + panel.bounds.w <= screenFrame.w)
+    screenFrame = { x = 0, y = 0, w = 1600, h = 1000 }
+    print("Card-shape checks passed: portrait, wide, and screen-only changes preserve selection")
+end
 windowFrame = { x = -100, y = 0, w = 600, h = 500 }
 fixture(5)
 local _, _, clipped = tool.state()

@@ -27,3 +27,5 @@ Wake regressions deliver repeated system/display/unlock events and assert that r
 The simulated-day check advances a fake clock through at least 24 hours, alternating browsing and idle periods. It checks 4,320 visits, 12 idle hours, 24 silent-socket recoveries, receiver-side order, and bounded timer/cache collections. This runs without real waiting and is not a native 24-hour endurance or memory benchmark.
 
 Layout regressions check all 2–25 tab counts across small, wide, tall, and large windows for non-overlapping cards, balanced row populations, contained labels, and the absence of a full-panel backdrop. Resize checks verify growing title/icon sizes and stable selection and MRU order.
+
+Card-shape regressions verify portrait and wide proportions, plus screen-only size changes that clip the available window area without changing the selected tab.

@@ -847,17 +847,21 @@ end
 
 -- Balance every row while keeping MRU order and similarly sized previews.
 local function layoutCards(count, width, height, gap)
+    -- Follow the visible window/screen shape, including portrait displays.
+    -- Bound only extreme proportions so previews and labels remain usable.
+    local targetAspect = math.max(0.65, math.min(2.6, width / height))
+    local minAspect, maxAspect = targetAspect * 0.85, targetAspect * 1.15
     local best, bestScore = nil, math.huge
     for rows = 1, count do
         local columns = math.ceil(count / rows)
         local cardW = (width - gap * (columns - 1)) / columns
         local cardH = (height - gap * (rows - 1)) / rows
         if cardW > 0 and cardH > 0 then
-            -- Avoid stretched strips in wide windows and towering cards in tall ones.
-            cardW = math.min(cardW, cardH * 2.0)
-            cardH = math.min(cardH, cardW / 1.25)
+            -- Allow a little flexibility around the screen's proportions to fit rows.
+            cardW = math.min(cardW, cardH * maxAspect)
+            cardH = math.min(cardH, cardW / minAspect)
             local coverage = count * cardW * cardH / (width * height)
-            local score = (1 - coverage) + math.abs(math.log((cardW / cardH) / 1.6)) * 0.55
+            local score = (1 - coverage) + math.abs(math.log((cardW / cardH) / targetAspect)) * 0.55
                 + math.max(0, 150 - cardW) / 150 + math.max(0, 100 - cardH) / 100
             if score < bestScore then
                 bestScore = score
