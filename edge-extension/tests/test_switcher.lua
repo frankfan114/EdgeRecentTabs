@@ -298,6 +298,34 @@ do
     for i, card in ipairs(largeCards) do assert(panel.elements[card.title].text == "Tab " .. i) end
     print("Layout checks passed: floating cards, balanced rows, no overlap, responsive labels, and MRU order")
 end
+-- Each dimension scales independently, without layout jumps from pixel thresholds.
+do
+    screenFrame = { x = 0, y = 0, w = 4000, h = 3000 }
+    for count = 2, 25 do
+        windowFrame = { x = 0, y = 0, w = 600, h = 400 }
+        fixture(count)
+        local _, selected, panel, cards, resize = tool.state()
+        local original = {}
+        for i, card in ipairs(cards) do
+            original[i] = { frame = panel.elements[card.rect].frame, row = card.row }
+        end
+        for _, scale in ipairs({ {1.5, 1}, {1, 1.5}, {2, 2}, {3, 1} }) do
+            windowFrame = { x = 0, y = 0, w = 600 * scale[1], h = 400 * scale[2] }
+            resize.callback()
+            local _, after, _, updated = tool.state()
+            assert(after == selected)
+            for i, card in ipairs(updated) do
+                local rect, before = panel.elements[card.rect].frame, original[i].frame
+                near(rect.w, before.w * scale[1]); near(rect.h, before.h * scale[2])
+                near(rect.x, before.x * scale[1]); near(rect.y, before.y * scale[2])
+                assert(card.row == original[i].row, "Resizing must retain proportional row placement")
+            end
+        end
+    end
+    screenFrame = { x = 0, y = 0, w = 1600, h = 1000 }
+    print("Proportional sizing checks passed: independent width/height scaling for all 2–25 tab counts")
+end
+
 -- Card proportions follow the available display area, including a monitor change.
 do
     screenFrame = { x = 0, y = 0, w = 700, h = 1000 }

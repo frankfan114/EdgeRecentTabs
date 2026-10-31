@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make card widths, heights, margins, and gaps proportional to the visible Edge window. Keep row placement stable for a fixed tab count and remove pixel-size/aspect limits from card sizing.
+
 - Adapt card proportions to the available screen/window area, with wider cards in landscape layouts and taller cards in portrait layouts; resize live across displays while preserving selection.
 
 - Remove the large switcher backdrop; use individual translucent cards with transparent gaps and a compact keyboard hint.

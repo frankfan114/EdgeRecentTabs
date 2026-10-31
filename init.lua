@@ -846,37 +846,35 @@ local function overlayFrameForWindow()
 end
 
 -- Balance every row while keeping MRU order and similarly sized previews.
-local function layoutCards(count, width, height, gap)
-    -- Follow the visible window/screen shape, including portrait displays.
-    -- Bound only extreme proportions so previews and labels remain usable.
-    local targetAspect = math.max(0.65, math.min(2.6, width / height))
-    local minAspect, maxAspect = targetAspect * 0.85, targetAspect * 1.15
+local function layoutCards(count, width, height, gapX, gapY)
+    -- Use the same fraction of the available width and height. Percentage gaps
+    -- and a dimensionless score keep card sizes proportional on every resize.
+    local targetAspect = width / height
     local best, bestScore = nil, math.huge
     for rows = 1, count do
         local columns = math.ceil(count / rows)
-        local cardW = (width - gap * (columns - 1)) / columns
-        local cardH = (height - gap * (rows - 1)) / rows
+        local cardW = (width - gapX * (columns - 1)) / columns
+        local cardH = (height - gapY * (rows - 1)) / rows
         if cardW > 0 and cardH > 0 then
-            -- Allow a little flexibility around the screen's proportions to fit rows.
-            cardW = math.min(cardW, cardH * maxAspect)
-            cardH = math.min(cardH, cardW / minAspect)
+            cardW = math.min(cardW, cardH * targetAspect)
+            cardH = math.min(cardH, cardW / targetAspect)
             local coverage = count * cardW * cardH / (width * height)
-            local score = (1 - coverage) + math.abs(math.log((cardW / cardH) / targetAspect)) * 0.55
-                + math.max(0, 150 - cardW) / 150 + math.max(0, 100 - cardH) / 100
-            if score < bestScore then
+            local score = 1 - coverage
+            -- Keep the first (fewest-row) layout on ties, including rounding noise.
+            if score < bestScore - 0.000001 then
                 bestScore = score
                 best = { rows = rows, w = cardW, h = cardH }
             end
         end
     end
     local frames = {}
-    local stackH = best.rows * best.h + (best.rows - 1) * gap
+    local stackH = best.rows * best.h + (best.rows - 1) * gapY
     for row = 0, best.rows - 1 do
         local inRow = math.floor(count / best.rows) + (row < count % best.rows and 1 or 0)
-        local rowW = inRow * best.w + (inRow - 1) * gap
+        local rowW = inRow * best.w + (inRow - 1) * gapX
         for column = 0, inRow - 1 do
-            frames[#frames + 1] = { x = (width - rowW) / 2 + column * (best.w + gap),
-                y = (height - stackH) / 2 + row * (best.h + gap),
+            frames[#frames + 1] = { x = (width - rowW) / 2 + column * (best.w + gapX),
+                y = (height - stackH) / 2 + row * (best.h + gapY),
                 w = best.w, h = best.h, row = row }
         end
     end
@@ -891,15 +889,15 @@ local function showOverlay()
     local width, height = frame.w, frame.h
 
     local itemCount = math.min(#switchChoices, MAX_TABS)
-    local outerPad = math.min(14, width * 0.03, height * 0.04)
-    local footerH = math.min(26, height * 0.09)
-    local gap = math.min(16, width * 0.025, height * 0.025)
+    local padX, padY = width * 0.02, height * 0.02
+    local footerH = height * 0.055
+    local gapX, gapY = width * 0.018, height * 0.018
 
     if not overlay then overlay = hs.canvas.new(frame) else overlay:frame(frame) end
 
-    local usableW = width - outerPad * 2
-    local usableH = height - outerPad * 2 - footerH - gap
-    local layout, stackBottom = layoutCards(itemCount, usableW, usableH, gap)
+    local usableW = width - padX * 2
+    local usableH = height - padY * 2 - footerH - gapY
+    local layout, stackBottom = layoutCards(itemCount, usableW, usableH, gapX, gapY)
     local elements = {}
     overlayCardElements = {}
     overlayItemCount = itemCount
@@ -908,7 +906,7 @@ local function showOverlay()
     for i = 1, itemCount do
         local tab = switchChoices[i]
         local placement = layout[i]
-        local cx, cy = outerPad + placement.x, outerPad + placement.y
+        local cx, cy = padX + placement.x, padY + placement.y
         local cardW, cardH = placement.w, placement.h
         local row = placement.row
         local selected = i == selectedIndex
@@ -1042,7 +1040,7 @@ local function showOverlay()
     end
 
     local footerW = math.min(usableW, 360)
-    local footerY = outerPad + stackBottom + gap
+    local footerY = padY + stackBottom + gapY
     table.insert(elements, {
         type = "rectangle", action = "fill",
         frame = { x = (width - footerW) / 2, y = footerY, w = footerW, h = footerH },

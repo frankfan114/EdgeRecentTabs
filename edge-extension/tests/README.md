@@ -29,3 +29,5 @@ The simulated-day check advances a fake clock through at least 24 hours, alterna
 Layout regressions check all 2–25 tab counts across small, wide, tall, and large windows for non-overlapping cards, balanced row populations, contained labels, and the absence of a full-panel backdrop. Resize checks verify growing title/icon sizes and stable selection and MRU order.
 
 Card-shape regressions verify portrait and wide proportions, plus screen-only size changes that clip the available window area without changing the selected tab.
+
+Proportional sizing checks resize width and height independently, double both dimensions, and test a very wide window for each of the 2–25 tab counts. They verify exact card-size and position scaling plus stable rows and selection.
