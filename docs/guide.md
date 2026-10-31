@@ -10,6 +10,8 @@ Setup, updates, troubleshooting, and development notes.
 
 `edge-extension/background.js` runs in Edge. It tracks tab history, captures previews, loads site icons, and communicates with Hammerspoon over a local bridge at `127.0.0.1:27123`. The extension's HTML, CSS, and `options.js` implement its settings popup.
 
+The Option+Tab panel uses a 65% opaque black background so the page remains visible through it. Text, icons, and previews stay fully opaque, and the selected card has a white outline with a subtle fill. To adjust the appearance, edit `OVERLAY_BACKGROUND_ALPHA` and `SELECTED_CARD_ALPHA` in `init.lua` (0 is transparent, 1 is opaque), then follow the update steps below.
+
 ## Install
 
 You need macOS, [Microsoft Edge](https://www.microsoft.com/edge), [Hammerspoon](https://www.hammerspoon.org/), and Python 3 for the preparation step.

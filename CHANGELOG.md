@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make the Option+Tab panel more transparent with a 65% opaque background and a softer selected-card fill; keep text, icons, and previews at full opacity.
+
 - Preserve the local listening server through wake/unlock instead of rebinding its port; native logs showed repeated address-in-use failures before MRU froze.
 
 - Send live tab visits through the existing WebSocket, with HTTP only as a bounded fallback; this prevents silent HTTP failures from freezing history behind a healthy socket.

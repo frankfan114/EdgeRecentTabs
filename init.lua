@@ -17,6 +17,8 @@ local FAVICON_CACHE_LIMIT = 100
 local TAB_SCOPE = "current" -- "current" or "all"
 local OVERLAY_WINDOW_WIDTH = 0.88
 local OVERLAY_WINDOW_HEIGHT = 0.80
+local OVERLAY_BACKGROUND_ALPHA = 0.65
+local SELECTED_CARD_ALPHA = 0.16
 
 local BRIDGE_PORT = 27123
 local BRIDGE_TOKEN = "__EDGE_MRU_LOCAL_TOKEN__"
@@ -779,7 +781,7 @@ local function domainFromURL(url)
 end
 
 local function cardFillColor(selected)
-    if selected then return { white = 1.0, alpha = 0.26 } end
+    if selected then return { white = 1.0, alpha = SELECTED_CARD_ALPHA } end
     return { white = 1.0, alpha = 0.0 }
 end
 
@@ -870,13 +872,13 @@ local function showOverlay()
     overlayCardElements = {}
     overlayItemCount = itemCount
 
-    -- Mostly opaque backing keeps the overlay readable over page content.
+    -- Translucent backing reveals the page without fading text or previews.
     table.insert(elements, {
         type = "rectangle",
         action = "fill",
         frame = { x = 0, y = 0, w = width, h = height },
         roundedRectRadii = { xRadius = 14, yRadius = 14 },
-        fillColor = { white = 0.0, alpha = 0.90 },
+        fillColor = { white = 0.0, alpha = OVERLAY_BACKGROUND_ALPHA },
         withShadow = false,
     })
 
