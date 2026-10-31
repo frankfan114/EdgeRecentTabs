@@ -18,6 +18,8 @@ From the project root, `python3 scripts/test_prepare_install.py` validates insta
 
 The separate lifecycle suite models native callback references and weak listener ownership. It forces full garbage collection, verifies that all three persistent listeners remain active, then releases their owner and verifies cleanup. It intentionally avoids keeping test-owned strong references to listeners, which would conceal this class of failure.
 
+Appearance regressions cover the default light appearance (`nil`), explicit light/dark modes, changes while the panel is open, and reopening after a change. They verify readable foreground/background pairs, selection and preview retention, stable transparency, no unnecessary redraws, and no appearance queries while idle.
+
 Transport regressions simulate failed HTTP with a working socket, require live visit messages without per-visit HTTP, verify authenticated heartbeat replies, retire silent sockets after 15 seconds, replay visit order on reconnect, ignore late callbacks from replaced sockets, and ensure only one heartbeat timer remains. Lua tests distinguish history freshness from connection health.
 
 Wake regressions deliver repeated system/display/unlock events and assert that recovery preserves exactly one listening server without stopping or rebinding its port; live updates must continue afterward.

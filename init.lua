@@ -41,6 +41,7 @@ local switchChoices = {}
 local selectedIndex = 1
 
 local overlay = nil
+local overlayTheme = nil
 local overlayCardElements = {}
 local overlayItemCount = 0
 local overlayHostWindow = nil
@@ -757,6 +758,16 @@ end
 -- UI helpers
 ------------------------------------------------------------
 
+local OVERLAY_THEMES = {
+    Dark = { background = 0.0, foreground = 1.0 },
+    Light = { background = 1.0, foreground = 0.0 },
+}
+
+local function currentOverlayTheme()
+    -- Hammerspoon returns nil for the default (light) macOS appearance.
+    return hs.host.interfaceStyle() == "Dark" and OVERLAY_THEMES.Dark or OVERLAY_THEMES.Light
+end
+
 local function hideOverlay()
     if overlay then overlay:hide() end
 end
@@ -781,12 +792,11 @@ local function domainFromURL(url)
 end
 
 local function cardFillColor(selected)
-    if selected then return { white = 1.0, alpha = SELECTED_CARD_ALPHA } end
-    return { white = 1.0, alpha = 0.0 }
+    return { white = overlayTheme.foreground, alpha = selected and SELECTED_CARD_ALPHA or 0.0 }
 end
 
 local function cardStrokeColor(selected)
-    return { white = 1.0, alpha = selected and 1.0 or 0.35 }
+    return { white = overlayTheme.foreground, alpha = selected and 1.0 or 0.35 }
 end
 
 local function cardStrokeWidth(selected)
@@ -836,6 +846,7 @@ end
 local function showOverlay()
     if #switchChoices == 0 then return end
 
+    overlayTheme = currentOverlayTheme()
     local frame = overlayFrameForWindow()
     local width, height = frame.w, frame.h
 
@@ -878,7 +889,7 @@ local function showOverlay()
         action = "fill",
         frame = { x = 0, y = 0, w = width, h = height },
         roundedRectRadii = { xRadius = 14, yRadius = 14 },
-        fillColor = { white = 0.0, alpha = OVERLAY_BACKGROUND_ALPHA },
+        fillColor = { white = overlayTheme.background, alpha = OVERLAY_BACKGROUND_ALPHA },
         withShadow = false,
     })
 
@@ -888,7 +899,7 @@ local function showOverlay()
         frame = { x = outerPad + 2, y = outerPad / 2, w = width - outerPad * 2 - 4, h = headerH },
         text = "Edge tabs  ·  " .. scopeLabel .. "  ·  " .. tostring(itemCount),
         textSize = math.max(9, math.min(13, headerH * 0.55)),
-        textColor = { white = 1.0, alpha = 1.0 },
+        textColor = { white = overlayTheme.foreground, alpha = 1.0 },
         textLineBreak = "truncateTail",
     })
 
@@ -932,9 +943,9 @@ local function showOverlay()
             action = "fill",
             frame = previewFrame,
             roundedRectRadii = { xRadius = 7, yRadius = 7 },
-            -- Translucent black backing for the preview area. This remains
+            -- Translucent themed backing for the preview area. This remains
             -- visible around letterboxed images and when no preview exists.
-            fillColor = { white = 0.0, alpha = 0.22 },
+            fillColor = { white = overlayTheme.background, alpha = 0.22 },
         })
 
         local edgeTabID = tostring(tab.edgeTabID or "")
@@ -957,7 +968,7 @@ local function showOverlay()
             text = previewImage and "" or "Preview unavailable",
             textSize = math.max(9, math.min(12, cardH * 0.065)),
             textAlignment = "center",
-            textColor = { white = 1.0, alpha = 1.0 },
+            textColor = { white = overlayTheme.foreground, alpha = 1.0 },
         })
 
         local titleY = cy + previewInset + previewH + 3
@@ -984,7 +995,7 @@ local function showOverlay()
                 w = math.max(1, cardW - iconSize - 21), h = titleH },
             text = tab.text,
             textSize = math.max(9, math.min(13, titleH * 0.65)),
-            textColor = { white = 1.0, alpha = 1.0 },
+            textColor = { white = overlayTheme.foreground, alpha = 1.0 },
             textLineBreak = "wordWrap",
         })
 
@@ -993,7 +1004,7 @@ local function showOverlay()
             frame = { x = cx + 9, y = domainY, w = math.max(1, cardW - 18), h = domainH },
             text = domainFromURL(tab.url),
             textSize = math.max(7, math.min(9, domainH * 0.65)),
-            textColor = { white = 1.0, alpha = 1.0 },
+            textColor = { white = overlayTheme.foreground, alpha = 1.0 },
             textLineBreak = "truncateMiddle",
         })
 
@@ -1002,8 +1013,8 @@ local function showOverlay()
             action = "strokeAndFill",
             frame = { x = cx + 9, y = cy + 9, w = 23, h = 18 },
             roundedRectRadii = { xRadius = 6, yRadius = 6 },
-            fillColor = { white = 1.0, alpha = 0.72 },
-            strokeColor = { white = 0.0, alpha = 1.0 },
+            fillColor = { white = overlayTheme.foreground, alpha = 0.72 },
+            strokeColor = { white = overlayTheme.background, alpha = 1.0 },
             strokeWidth = 1,
         })
 
@@ -1013,7 +1024,7 @@ local function showOverlay()
             text = tostring(i),
             textSize = 9,
             textAlignment = "center",
-            textColor = { white = 0.0, alpha = 1.0 },
+            textColor = { white = overlayTheme.background, alpha = 1.0 },
         })
 
         overlayCardElements[i] = {
@@ -1035,7 +1046,7 @@ local function showOverlay()
         textSize = math.max(8, math.min(11, width / 48)),
         textAlignment = "center",
         textLineBreak = "truncateTail",
-        textColor = { white = 1.0, alpha = 0.70 },
+        textColor = { white = overlayTheme.foreground, alpha = 0.70 },
     })
 
     overlay:replaceElements(elements)
@@ -1049,7 +1060,9 @@ local function watchOverlayResize()
         if not switching or not overlay then return end
         local frame = overlayFrameForWindow()
         local current = overlay:frame()
-        if math.abs(frame.x - current.x) > 1 or math.abs(frame.y - current.y) > 1
+        -- Reuse the active-panel timer so appearance changes need no idle polling.
+        if overlayTheme ~= currentOverlayTheme()
+            or math.abs(frame.x - current.x) > 1 or math.abs(frame.y - current.y) > 1
             or math.abs(frame.w - current.w) > 1 or math.abs(frame.h - current.h) > 1
         then showOverlay() end
     end)

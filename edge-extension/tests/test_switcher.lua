@@ -4,6 +4,8 @@ local screenFrame = { x = 0, y = 0, w = 1600, h = 1000 }
 local windowFrame = { x = 100, y = 100, w = 1000, h = 700 }
 local modifiers = { alt = true }
 local clock = 100
+local interfaceStyle = "Dark"
+local appearanceReads = 0
 local timers, sent, hotkeys = {}, {}, {}
 local frontmostEdge = true
 local windowOwnerEdge = true
@@ -40,6 +42,10 @@ for key, code in pairs(keys) do keyNames[code] = key end
 for code, key in pairs(keyNames) do keys[code] = key end
 hs = {
     dockicon = { hide = function() end },
+    host = { interfaceStyle = function()
+        appearanceReads = appearanceReads + 1
+        return interfaceStyle
+    end },
     image = { imageFromAppBundle = function() return "edge-icon" end,
         imageFromURL = function(url) return "decoded:" .. url end },
     application = { frontmostApplication = function()
@@ -166,6 +172,65 @@ liveResize.callback()
 local _, newIndex = tool.state(); assert(newIndex == oldIndex)
 near(panel.bounds.w, 600 * 0.88); near(panel.bounds.h, 450 * 0.80)
 near(panel.bounds.x, 300 + 600 * 0.06); near(panel.bounds.y, 200 + 450 * 0.10)
+
+-- Follow the system appearance on opening and during a switch, preserving state.
+do
+    interfaceStyle = nil -- macOS's default light appearance is returned as nil.
+    fixture(3)
+    local _, selected, panel, cards, refresh = tool.state()
+    local preview = "data:image/jpeg;base64,cHJldmlldw=="
+    tool.payload({ type = "thumbnail", tabId = 2, dataUrl = preview })
+    local image = panel.elements[cards[2].preview].image
+    assert(image, "Appearance checks need an actual cached preview")
+    local messagesBefore, timersBefore = #sent, #timers
+    local function checkTheme(background, foreground)
+        local open, current, currentPanel, refs = tool.state()
+        assert(open and currentPanel == panel and current == selected)
+        assert(panel.elements[1].fillColor.white == background)
+        near(panel.elements[1].fillColor.alpha, 0.65)
+        for _, element in ipairs(panel.elements) do
+            if element.type == "text" then
+                -- Number badges use inverse text; every other label uses foreground.
+                assert(element.textColor.white == (tonumber(element.text) and background or foreground))
+            end
+        end
+        for index, card in ipairs(refs) do
+            local rect = panel.elements[card.rect]
+            assert(rect.strokeColor.white == foreground)
+            assert(rect.fillColor.white == foreground)
+            near(rect.fillColor.alpha, index == selected and 0.16 or 0)
+        end
+        assert(panel.elements[refs[2].preview].image == image)
+        assert(panel.elements[refs[2].preview].imageAlpha == 1)
+        assert(#sent == messagesBefore and #timers == timersBefore,
+            "Appearance changes must not switch tabs or add timers")
+    end
+    checkTheme(1, 0)
+    local unchanged = panel.elements
+    refresh.callback()
+    assert(panel.elements == unchanged, "An unchanged appearance should not rebuild the panel")
+    interfaceStyle = "Dark"
+    refresh.callback()
+    checkTheme(0, 1)
+    press("right"); selected = 3
+    checkTheme(0, 1)
+    interfaceStyle = "Light"
+    refresh.callback()
+    checkTheme(1, 0)
+    press("left"); selected = 2
+    checkTheme(1, 0)
+    tool.finish(true)
+    interfaceStyle = "Dark"
+    local readsBefore = appearanceReads
+    refresh.callback()
+    assert(appearanceReads == readsBefore and not panel.visible,
+        "A closed panel must not poll appearance or reopen")
+    tool.begin(1)
+    local _, _, reopened = tool.state()
+    assert(reopened.elements[1].fillColor.white == 0, "Reopening must read the new system appearance")
+    tool.finish(true)
+    print("Appearance checks passed: light/dark opening, live changes, selection, preview retention, and no idle polling")
+end
 
 -- Exercise every supported tab count over small, wide, tall and full-size windows.
 for _, size in ipairs({ {480, 320}, {700, 950}, {1300, 400}, {1600, 1000} }) do
@@ -312,12 +377,14 @@ assert(event("tab", 2, { alt = true }))
 
 -- An inactive tap allocates no timers and queries no apps/windows for ordinary keys.
 local readsBefore, windowsBefore, timersBefore = frontmostReads, windowReads, #timers
+local appearanceBefore = appearanceReads
 local started = os.clock()
 for _ = 1, 100000 do
     assert(not press("a", {}))
     assert(not event("a", 3, {}))
 end
 assert(frontmostReads == readsBefore and windowReads == windowsBefore and #timers == timersBefore)
+assert(appearanceReads == appearanceBefore, "Ordinary keys must not query system appearance")
 print(string.format("Idle mock path: 300000 events in %.3fs; zero app/window queries or added timers", os.clock() - started))
 print("Lua behavior checks passed: Edge-only shortcuts, release/focus races, pass-through, navigation, resize, and icons")
 

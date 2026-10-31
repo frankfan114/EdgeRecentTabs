@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Follow macOS light/dark appearance for the Option+Tab panel, text, selection, preview backing, and number badges. Update an open panel without changing its selection or cached previews; keep 65% background opacity in both themes.
+
 - Make the Option+Tab panel more transparent with a 65% opaque background and a softer selected-card fill; keep text, icons, and previews at full opacity.
 
 - Preserve the local listening server through wake/unlock instead of rebinding its port; native logs showed repeated address-in-use failures before MRU froze.
