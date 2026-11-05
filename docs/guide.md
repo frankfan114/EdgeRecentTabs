@@ -14,7 +14,7 @@ The Option+Tab switcher follows macOS **System Settings → Appearance**, includ
 
 Cards are arranged in balanced, centered rows. For a fixed tab count, each card occupies a consistent fraction of the visible Edge window: doubling window width doubles card width, and doubling height doubles card height. Margins and gaps scale independently with those dimensions, so resizing preserves row placement and recent-tab order. More tabs divide the same area into smaller cards. If the window extends beyond a display, sizing uses its visible area. Page previews retain their original proportions inside each card.
 
-Titles and icons scale with card size; larger cards allow two title lines, and compact cards truncate long names. Very small cards omit the domain to leave room for the title and preview. Arrow navigation follows the closest card in the adjacent row.
+Titles and icons scale with card size. Every title stays on one line, with an ellipsis for long names. Compact labels and tighter spacing leave more room for the preview within the same card. Very small cards omit the domain to leave room for the title and preview. Arrow navigation follows the closest card in the adjacent row.
 
 To adjust card transparency, edit `CARD_BACKGROUND_ALPHA` in `init.lua` (0 is transparent, 1 is opaque). `SELECTED_CARD_ALPHA` controls the strength of the selection tint. Then follow the update steps below.
 

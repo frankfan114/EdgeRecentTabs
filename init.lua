@@ -924,12 +924,12 @@ local function showOverlay()
 
         local previewInset = math.min(6, cardW * 0.03, cardH * 0.03)
         local textPad = math.min(14, cardW * 0.045)
-        local titleSize = math.min(26, math.max(9, math.min(cardW * 0.055, cardH * 0.10)))
-        local titleLines = cardH >= 180 and cardW >= 220 and 2 or 1
-        local domainSize = math.min(14, math.max(8, titleSize * 0.68))
+        -- Keep labels compact and single-line so the preview gets more of each card.
+        local titleSize = math.min(20, math.max(9, math.min(cardW * 0.05, cardH * 0.08)))
+        local domainSize = math.min(12, math.max(8, titleSize * 0.68))
         local domainH = cardH >= 100 and domainSize * 1.4 or 0
-        local titleH = titleSize * 1.35 * titleLines
-        local textGap = math.min(5, cardH * 0.02)
+        local titleH = titleSize * 1.35
+        local textGap = math.min(3, cardH * 0.012)
         local metaHeight = titleH + domainH + textGap * 3
         local previewH = math.max(1, cardH - metaHeight - previewInset * 2)
         local previewFrame = {
@@ -995,7 +995,7 @@ local function showOverlay()
             text = tab.text,
             textSize = titleSize,
             textColor = { white = overlayTheme.foreground, alpha = 1.0 },
-            textLineBreak = titleLines == 2 and "wordWrap" or "truncateTail",
+            textLineBreak = "truncateTail",
         })
 
         if domainH > 0 then

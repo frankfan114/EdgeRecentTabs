@@ -7,7 +7,7 @@
 - Adapt card proportions to the available screen/window area, with wider cards in landscape layouts and taller cards in portrait layouts; resize live across displays while preserving selection.
 
 - Remove the large switcher backdrop; use individual translucent cards with transparent gaps and a compact keyboard hint.
-- Scale tab titles, site icons, and domain labels with card size, with two-line titles on larger cards and compact labels on smaller ones.
+- Scale tab titles, site icons, and domain labels with card size. Keep titles on one line with an ellipsis, and use compact labels and tighter spacing to enlarge previews within the existing cards.
 - Balance cards across centered rows, adapting to window shape and tab count while preserving MRU order and spatial arrow navigation.
 
 - Follow macOS light/dark appearance for the Option+Tab panel, text, selection, preview backing, and number badges. Update an open panel without changing its selection or cached previews; keep 65% background opacity in both themes.
