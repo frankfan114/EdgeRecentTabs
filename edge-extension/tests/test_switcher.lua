@@ -6,6 +6,7 @@ local modifiers = { alt = true }
 local clock = 100
 local interfaceStyle = "Dark"
 local appearanceReads = 0
+local decodedImageSize = { w = 520, h = 320 }
 local timers, sent, hotkeys = {}, {}, {}
 local frontmostEdge = true
 local windowOwnerEdge = true
@@ -47,7 +48,10 @@ hs = {
         return interfaceStyle
     end },
     image = { imageFromAppBundle = function() return "edge-icon" end,
-        imageFromURL = function(url) return "decoded:" .. url end },
+        imageFromURL = function(url)
+            local size = { w = decodedImageSize.w, h = decodedImageSize.h }
+            return { source = url, size = function() return size end }
+        end },
     application = { frontmostApplication = function()
         frontmostReads = frontmostReads + 1
         return frontmostEdge and edgeApplication or otherApplication
@@ -257,14 +261,29 @@ for _, size in ipairs({ {480, 320}, {700, 950}, {1300, 400}, {1600, 1000} }) do
         local minRow, maxRow = count, 0
         for _, n in pairs(rowCounts) do minRow = math.min(minRow, n); maxRow = math.max(maxRow, n) end
         assert(maxRow - minRow <= 1, "Rows should be balanced, without sparse trailing rows")
+        local clip
         for _, element in ipairs(canvas.elements) do
-            assert(element.frame.w > 0 and element.frame.h > 0)
-            assert(not (element.type == "rectangle" and element.frame.w >= canvas.bounds.w * 0.95
-                and element.frame.h >= canvas.bounds.h * 0.95), "The large background panel must be absent")
-            assert(element.frame.x >= 0 and element.frame.y >= 0)
-            assert(element.frame.x + element.frame.w <= canvas.bounds.w + 0.001)
-            assert(element.frame.y + element.frame.h <= canvas.bounds.h + 0.001)
+            if element.type == "resetClip" then
+                assert(clip, "A reset must follow a preview clip")
+                clip = nil
+            else
+                if element.action == "clip" then
+                    assert(not clip, "The previous card's clip must be reset")
+                    clip = element.frame
+                elseif clip then
+                    assert(element.type == "image", "Only the preview image should be clipped")
+                end
+                assert(element.frame.w > 0 and element.frame.h > 0)
+                assert(not (element.type == "rectangle" and element.frame.w >= canvas.bounds.w * 0.95
+                    and element.frame.h >= canvas.bounds.h * 0.95), "The large background panel must be absent")
+                -- Enlarged images can extend beyond the canvas, but visible content cannot.
+                local visible = clip or element.frame
+                assert(visible.x >= 0 and visible.y >= 0)
+                assert(visible.x + visible.w <= canvas.bounds.w + 0.001)
+                assert(visible.y + visible.h <= canvas.bounds.h + 0.001)
+            end
         end
+        assert(not clip, "Clipping must not leak into the footer")
         for index, card in ipairs(cards) do
             press(tostring(1))
             -- Select via the real navigation path, including cards beyond 9.
@@ -281,6 +300,48 @@ for _, size in ipairs({ {480, 320}, {700, 950}, {1300, 400}, {1600, 1000} }) do
             else near(math.abs(cards[target].centerX - card.centerX), best) end
         end
     end
+end
+-- Cached, late and replacement previews fill the card, even when their shape changes.
+do
+    windowFrame = { x = 0, y = 0, w = 1000, h = 700 }
+    fixture(4)
+    local function checkPreview()
+        local _, _, panel, cards = tool.state()
+        local card = cards[1]
+        local image = panel.elements[card.preview]
+        local frame, visible = image.frame, card.previewFrame
+        assert(frame.x <= visible.x + 0.001 and frame.w >= visible.w - 0.001)
+        assert(frame.x + frame.w >= visible.x + visible.w - 0.001)
+        assert(frame.h >= visible.h - 0.001, "Preview must cover the whole area without empty bands")
+        near(frame.y, visible.y) -- Retain the top of the page.
+        near(frame.x + frame.w / 2, visible.x + visible.w / 2)
+        near(frame.w / frame.h, decodedImageSize.w / decodedImageSize.h)
+        assert(panel.elements[card.preview - 1].action == "clip")
+        assert(panel.elements[card.preview - 1].frame == visible)
+        assert(panel.elements[card.preview + 1].type == "resetClip")
+        assert(panel.elements[card.placeholder].text == "" and image.imageAlpha == 1)
+        local title = panel.elements[card.title]
+        assert(title.textLineBreak == "truncateTail" and title.frame.y >= visible.y + visible.h)
+        assert(visible.h > panel.elements[card.rect].frame.h * 0.8,
+            "The preview should occupy most of a normal-sized card")
+    end
+    for _, size in ipairs({ {w = 520, h = 320}, {w = 120, h = 640}, {w = 1200, h = 180} }) do
+        decodedImageSize = size
+        tool.payload({ type = "thumbnail", tabId = 1, dataUrl = "data:image/jpeg;base64,cHJldmlldw==" })
+        checkPreview()
+        local _, selected, panel, cards, resize = tool.state()
+        local image = panel.elements[cards[1].preview].image
+        windowFrame.w = windowFrame.w == 1000 and 1300 or 1000
+        resize.callback()
+        checkPreview()
+        assert(select(2, tool.state()) == selected)
+        tool.finish(true); tool.begin(1)
+        checkPreview()
+        local _, _, reopened, reopenedCards = tool.state()
+        assert(reopened.elements[reopenedCards[1].preview].image == image)
+    end
+    decodedImageSize = { w = 520, h = 320 }
+    print("Preview checks passed: full-area fill, preserved proportions, top-aligned crops, live updates, resize, and reopen")
 end
 -- Labels grow with cards, and resize retains the selected tab and MRU positions.
 do
@@ -360,7 +421,7 @@ assert(clipped.bounds.x >= 0 and clipped.bounds.x + clipped.bounds.w <= 500)
 local _, _, iconPanel, iconRefs = tool.state()
 local iconData = "data:image/png;base64,aWNvbg=="
 tool.payload({ type = "favicon", tabId = 2, dataUrl = iconData })
-assert(iconPanel.elements[iconRefs[2].icon].image == "decoded:" .. iconData)
+assert(iconPanel.elements[iconRefs[2].icon].image.source == iconData)
 tool.payload({ type = "favicon", tabId = 999, dataUrl = iconData })
 local _, _, _, _, _, _, _, icons = tool.state(); assert(icons[999] == nil)
 tool.payload({ type = "mruSnapshot", tabs = { { tabId = 1, windowId = 1, title = "one", url = "https://one" } } })

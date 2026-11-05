@@ -299,6 +299,17 @@ local function getPreviewImage(edgeTabID)
     return image
 end
 
+-- Fill the preview without distorting the page. The canvas clips any overflow;
+-- keep the top of the page visible and center any horizontal crop.
+local function previewImageFrame(image, frame)
+    if not image then return frame end
+    local size = image:size()
+    if size.w <= 0 or size.h <= 0 then return frame end
+    local scale = math.max(frame.w / size.w, frame.h / size.h)
+    local width, height = size.w * scale, size.h * scale
+    return { x = frame.x + (frame.w - width) / 2, y = frame.y, w = width, h = height }
+end
+
 local function applyThumbnail(edgeTabID, dataUrl)
     edgeTabID = tostring(edgeTabID or "")
     dataUrl = tostring(dataUrl or "")
@@ -316,6 +327,7 @@ local function applyThumbnail(edgeTabID, dataUrl)
             if tostring(tab.edgeTabID or "") == edgeTabID then
                 local refs = overlayCardElements[i]
                 if refs and refs.preview then
+                    overlay:elementAttribute(refs.preview, "frame", previewImageFrame(image, refs.previewFrame))
                     overlay:elementAttribute(refs.preview, "image", image)
                     overlay:elementAttribute(refs.preview, "imageAlpha", 1.0)
                     if refs.placeholder then
@@ -782,15 +794,6 @@ local function deleteOverlay()
     overlayItemCount = 0
 end
 
-local function domainFromURL(url)
-    url = tostring(url or "")
-    local domain = url:match("^https?://([^/]+)")
-    if domain then return domain:gsub("^www%.", "") end
-    if url:match("^file://") then return "Local file" end
-    if url:match("^edge://") then return "Microsoft Edge" end
-    return url
-end
-
 local function cardFillColor(selected)
     local tint = selected and SELECTED_CARD_ALPHA or 0.0
     return { white = overlayTheme.background * (1 - tint) + overlayTheme.foreground * tint,
@@ -922,15 +925,13 @@ local function showOverlay()
             strokeWidth = cardStrokeWidth(selected),
         })
 
-        local previewInset = math.min(6, cardW * 0.03, cardH * 0.03)
-        local textPad = math.min(14, cardW * 0.045)
-        -- Keep labels compact and single-line so the preview gets more of each card.
-        local titleSize = math.min(20, math.max(9, math.min(cardW * 0.05, cardH * 0.08)))
-        local domainSize = math.min(12, math.max(8, titleSize * 0.68))
-        local domainH = cardH >= 100 and domainSize * 1.4 or 0
+        local previewInset = math.min(3, cardW * 0.02, cardH * 0.02)
+        local textPad = math.min(10, cardW * 0.04)
+        -- Reserve only one compact title row; the rest of the card is the preview.
+        local titleSize = math.min(14, math.max(9, math.min(cardW * 0.05, cardH * 0.08)))
         local titleH = titleSize * 1.35
         local textGap = math.min(3, cardH * 0.012)
-        local metaHeight = titleH + domainH + textGap * 3
+        local metaHeight = titleH + textGap * 2
         local previewH = math.max(1, cardH - metaHeight - previewInset * 2)
         local previewFrame = {
             x = cx + previewInset,
@@ -944,23 +945,27 @@ local function showOverlay()
             action = "fill",
             frame = previewFrame,
             roundedRectRadii = { xRadius = 7, yRadius = 7 },
-            -- Translucent themed backing for the preview area. This remains
-            -- visible around letterboxed images and when no preview exists.
+            -- The themed backing remains visible when no preview exists.
             fillColor = { white = overlayTheme.background, alpha = 0.22 },
         })
 
         local edgeTabID = tostring(tab.edgeTabID or "")
         local previewImage = getPreviewImage(edgeTabID)
 
+        table.insert(elements, {
+            type = "rectangle", action = "clip", frame = previewFrame,
+            roundedRectRadii = { xRadius = 7, yRadius = 7 },
+        })
         local previewIndex = #elements + 1
         table.insert(elements, {
             type = "image",
-            frame = previewFrame,
+            frame = previewImageFrame(previewImage, previewFrame),
             image = previewImage,
             imageScaling = "scaleProportionally",
             imageAlignment = "center",
             imageAlpha = previewImage and 1.0 or 0.0,
         })
+        table.insert(elements, { type = "resetClip" })
 
         local placeholderIndex = #elements + 1
         table.insert(elements, {
@@ -973,8 +978,7 @@ local function showOverlay()
         })
 
         local titleY = cy + previewInset + previewH + textGap
-        local domainY = titleY + titleH + textGap
-        local iconSize = math.min(24, titleSize * 1.2)
+        local iconSize = math.min(16, titleSize * 1.2)
         local favicon = faviconImages[tostring(tab.edgeTabID or "")]
         local icon = favicon and favicon.image or fallbackIcon
         local iconIndex = #elements + 1
@@ -998,17 +1002,6 @@ local function showOverlay()
             textLineBreak = "truncateTail",
         })
 
-        if domainH > 0 then
-            table.insert(elements, {
-                type = "text",
-                frame = { x = cx + textPad, y = domainY, w = cardW - textPad * 2, h = domainH },
-                text = domainFromURL(tab.url),
-                textSize = domainSize,
-                textColor = { white = overlayTheme.foreground, alpha = 1.0 },
-                textLineBreak = "truncateMiddle",
-            })
-        end
-
         table.insert(elements, {
             type = "rectangle",
             action = "strokeAndFill",
@@ -1031,6 +1024,7 @@ local function showOverlay()
         overlayCardElements[i] = {
             rect = rectIndex,
             preview = previewIndex,
+            previewFrame = previewFrame,
             placeholder = placeholderIndex,
             title = titleIndex,
             icon = iconIndex,

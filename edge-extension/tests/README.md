@@ -31,3 +31,5 @@ Layout regressions check all 2–25 tab counts across small, wide, tall, and lar
 Card-shape regressions verify portrait and wide proportions, plus screen-only size changes that clip the available window area without changing the selected tab.
 
 Proportional sizing checks resize width and height independently, double both dimensions, and test a very wide window for each of the 2–25 tab counts. They verify exact card-size and position scaling plus stable rows and selection.
+
+Preview rendering checks cover portrait and wide captures, full-area coverage without stretching, top-aligned cropping, clip isolation, asynchronous image replacements, cached reopen, and window resizing.
