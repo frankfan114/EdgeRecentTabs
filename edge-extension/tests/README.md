@@ -33,3 +33,5 @@ Card-shape regressions verify portrait and wide proportions, plus screen-only si
 Proportional sizing checks resize width and height independently, double both dimensions, and test a very wide window for each of the 2–25 tab counts. They verify exact card-size and position scaling plus stable rows and selection.
 
 Preview rendering checks cover portrait and wide captures, full-area coverage without stretching, top-aligned cropping, clip isolation, asynchronous image replacements, cached reopen, and window resizing.
+
+Preview recovery regressions hold capture and decode promises unresolved, expire their deadlines, and verify successful later captures, one automatic retry, priority for queued visits, and cancellation of deadline timers. Late capture/decode completions cannot publish stale images or release a newer request's guard; late decoded bitmaps are released. Navigation during capture also discards the old page image.

@@ -30,6 +30,9 @@ export async function runTests(root) {
   let bridgeRequests = 0;
   let bridgeFetch = async () => ({ ok: true });
   let bitmapsClosed = 0;
+  const captureWarnings = [];
+  const bitmap = () => ({ width: 1920, height: 1080, close() { bitmapsClosed += 1; } });
+  let createBitmap = async () => bitmap();
   let captureVisible = async () => "data:image/jpeg;base64,cHJldmlldw==";
   let fetchFavicon = async () => ({ ok: true, blob: async () => new Blob(["png"], { type: "image/png" }) });
   let settings = { maxTabs: 9, tabScope: "current" };
@@ -43,6 +46,7 @@ export async function runTests(root) {
   }
   const context = vm.createContext({
     URL, Blob, AbortSignal, WebSocket: Socket,
+    console: { warn: (message) => captureWarnings.push(message) },
     Date: class extends Date { static now() { return testNow; } },
     importScripts: (name) => {
       assert.equal(name, "bridge-token.js");
@@ -54,8 +58,7 @@ export async function runTests(root) {
         throw new Error("Generated bridge-token.js failed to execute or set a valid token");
       }
     },
-    createImageBitmap: async () => ({ width: 1920, height: 1080,
-      close() { bitmapsClosed += 1; } }),
+    createImageBitmap: (...args) => createBitmap(...args),
     OffscreenCanvas: class {
       constructor(width, height) { scaledSizes.push([width, height]); }
       getContext() { return { drawImage() {} }; }
@@ -107,6 +110,9 @@ export async function runTests(root) {
     refresh: refreshMruMetadata, activate: publishTab, snapshot: publishSnapshot,
     capture: captureThumbnail, remember: rememberThumbnail, cached: publishCachedThumbnails,
     previews: () => thumbnailCache,
+    schedule: scheduleThumbnailCapture,
+    previewState: () => ({ request: previewCaptureInFlight, pending: pendingPreviewTabId,
+      timer: previewTimer, diagnostics: { ...previewDiagnostics } }),
     connection: () => socket, event: publishEvent,
   })`, context);
   await api.ready;
@@ -251,6 +257,132 @@ export async function runTests(root) {
   captureVisible = async () => "data:image/jpeg;base64,cHJldmlldw==";
   await api.capture(1);
   assert.equal(bitmapsClosed, 2);
+  const drainMicrotasks = async () => {
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+  };
+  const advancePreviews = async (ms) => {
+    testNow += ms;
+    for (const [id, timer] of [...timeouts]) {
+      if (timer.dueAt <= testNow) {
+        timeouts.delete(id);
+        timer.callback();
+        await drainMicrotasks();
+      }
+    }
+    await drainMicrotasks();
+  };
+  const activateForCapture = (id) => {
+    for (const tab of tabs) tab.active = tab.id === id;
+  };
+
+  // A never-settling browser promise must not block every later preview.
+  let finishOldCapture;
+  captureVisible = () => new Promise((resolve) => { finishOldCapture = resolve; });
+  const hungCapture = api.capture(1);
+  await drainMicrotasks();
+  assert.equal(api.previewState().request.stage, "capture");
+  await advancePreviews(5000);
+  await hungCapture;
+  assert.equal(api.previewState().request, null);
+  assert.equal(api.previewState().diagnostics.lastResult, "timeout");
+  assert.equal(api.previewState().diagnostics.lastStage, "capture");
+  assert.equal(api.previewState().diagnostics.timeouts, 1);
+  assert.equal(captureWarnings.length, 1);
+
+  // An old completion cannot publish an image or unlock a newer capture.
+  activateForCapture(2);
+  let finishNewCapture;
+  captureVisible = () => new Promise((resolve) => { finishNewCapture = resolve; });
+  const newerCapture = api.capture(2);
+  await drainMicrotasks();
+  const newerRequest = api.previewState().request;
+  const beforeLateCapture = messages.length;
+  const beforeLateResize = scaledSizes.length;
+  finishOldCapture("data:image/jpeg;base64,b2xk");
+  await drainMicrotasks();
+  assert.equal(api.previewState().request, newerRequest);
+  assert.equal(messages.length, beforeLateCapture);
+  assert.equal(scaledSizes.length, beforeLateResize, "Expired captures must stop before decoding");
+  finishNewCapture("data:image/jpeg;base64,bmV3");
+  await newerCapture;
+  assert(api.previews().has(2));
+  assert.equal(api.previewState().request, null);
+  await advancePreviews(600); // The one retry for tab 1 skips its now-inactive tab.
+
+  // The deadline includes image decoding, with late bitmaps still released.
+  activateForCapture(1);
+  captureVisible = async () => "data:image/jpeg;base64,cHJldmlldw==";
+  let finishDecode;
+  createBitmap = () => new Promise((resolve) => { finishDecode = resolve; });
+  const hungDecode = api.capture(1);
+  await drainMicrotasks();
+  assert.equal(api.previewState().request.stage, "resize");
+  await advancePreviews(5000);
+  await hungDecode;
+  assert.equal(api.previewState().diagnostics.lastStage, "resize");
+  createBitmap = async () => bitmap();
+  await advancePreviews(600); // Automatic retry succeeds without another visit.
+  assert.equal(api.previewState().diagnostics.lastResult, "captured");
+  const beforeLateDecode = messages.length;
+  const beforeLateClose = bitmapsClosed;
+  finishDecode(bitmap());
+  await drainMicrotasks();
+  assert.equal(messages.length, beforeLateDecode);
+  assert.equal(bitmapsClosed, beforeLateClose + 1);
+
+  // Repeated timeouts retry only once; they cannot create an endless loop.
+  const beforeHungAttempts = api.previewState().diagnostics.attempts;
+  captureVisible = () => new Promise(() => {});
+  const permanentlyHung = api.capture(1);
+  await drainMicrotasks();
+  await advancePreviews(5000);
+  await permanentlyHung;
+  await advancePreviews(600);
+  assert(api.previewState().request);
+  await advancePreviews(5000);
+  assert.equal(api.previewState().request, null);
+  assert.equal(api.previewState().pending, null);
+  await advancePreviews(60000);
+  assert.equal(api.previewState().diagnostics.attempts, beforeHungAttempts + 2);
+
+  // A visit queued during a stall takes priority over retrying the old tab.
+  activateForCapture(1);
+  const superseded = api.capture(1);
+  await drainMicrotasks();
+  activateForCapture(2);
+  api.schedule(2);
+  await advancePreviews(350); // Busy capture preserves the queued tab.
+  captureVisible = async () => "data:image/jpeg;base64,cHJldmlldw==";
+  const beforeQueued = messages.length;
+  await advancePreviews(5000);
+  await superseded;
+  await advancePreviews(600);
+  const queuedImages = messages.slice(beforeQueued).filter((m) => m.type === "thumbnail");
+  assert.deepEqual(queuedImages.map((m) => m.tabId), [2]);
+  assert.equal(api.previewState().request, null);
+  assert.equal(api.previewState().pending, null);
+
+  // Navigation during capture must not label the old page as the new one.
+  activateForCapture(1);
+  let finishNavigation;
+  captureVisible = () => new Promise((resolve) => { finishNavigation = resolve; });
+  const navigating = api.capture(1);
+  await drainMicrotasks();
+  const oldUrl = tabs[0].url;
+  tabs[0].url = "https://example.com/new-page";
+  const beforeNavigation = messages.length;
+  finishNavigation("data:image/jpeg;base64,b2xk");
+  await navigating;
+  assert.equal(messages.length, beforeNavigation);
+  tabs[0].url = oldUrl;
+  captureVisible = async () => "data:image/jpeg;base64,cHJldmlldw==";
+  await api.capture(1);
+  assert.equal(api.previewState().diagnostics.lastResult, "captured");
+  assert.equal(api.previewState().request, null);
+  assert(![...timeouts.values()].some((timer) => timer.delay === 5000),
+    "Completed captures must cancel their deadline timers");
+  console.log("Preview recovery checks passed: capture/decode stalls, bounded retry, queued visits, and late-result isolation");
+
   for (let id = 1; id <= 51; id++) api.remember(id, "data:image/jpeg;base64,c21hbGw=");
   assert.equal(api.previews().size, 50);
   assert(!api.previews().has(1) && api.previews().has(51));
@@ -322,7 +454,7 @@ export async function runTests(root) {
         await timer.callback();
       }
     }
-    await Promise.resolve();
+    await drainMicrotasks();
   };
   let simulatedVisits = 0;
   let simulatedRecoveries = 0;

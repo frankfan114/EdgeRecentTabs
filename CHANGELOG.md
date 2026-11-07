@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Recover from stalled preview capture/decoding with a five-second deadline and one retry; ignore late results so one stuck browser promise cannot disable all future previews.
+
 - Make card widths, heights, margins, and gaps proportional to the visible Edge window. Keep row placement stable for a fixed tab count and remove pixel-size/aspect limits from card sizing.
 
 - Adapt card proportions to the available screen/window area, with wider cards in landscape layouts and taller cards in portrait layouts; resize live across displays while preserving selection.

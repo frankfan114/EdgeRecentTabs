@@ -17,6 +17,8 @@ const HISTORY_LIMIT = 100;
 
 const PREVIEW_CAPTURE_DELAY_MS = 350;
 const PREVIEW_MIN_INTERVAL_MS = 600;
+const PREVIEW_CAPTURE_TIMEOUT_MS = 5000;
+const PREVIEW_TIMEOUT_RETRIES = 1;
 const PREVIEW_CAPTURE_JPEG_QUALITY = 45;
 const PREVIEW_OUTPUT_JPEG_QUALITY = 0.55;
 const PREVIEW_MAX_WIDTH = 520;
@@ -33,8 +35,13 @@ let persistTimer = null;
 let mruTabs = [];
 let previewTimer = null;
 let pendingPreviewTabId = null;
+let pendingPreviewRetryCount = 0;
 let lastPreviewCaptureAt = 0;
-let previewCaptureInFlight = false;
+let previewCaptureInFlight = null;
+const previewDiagnostics = {
+  attempts: 0, successes: 0, failures: 0, timeouts: 0,
+  lastResult: "idle", lastStage: "", lastSuccessAt: 0
+};
 const thumbnailCache = new Map();
 const faviconCache = new Map();
 const pendingFavicons = new Map();
@@ -354,48 +361,94 @@ async function makeSmallThumbnail(dataUrl) {
   }
 }
 
-async function captureThumbnail(tabId) {
+async function captureThumbnail(tabId, retryCount = 0) {
   const id = Number(tabId);
   if (!Number.isInteger(id)) return;
 
   if (previewCaptureInFlight) {
-    scheduleThumbnailCapture(id, 150);
+    scheduleThumbnailCapture(id, 150, retryCount);
     return;
   }
 
-  previewCaptureInFlight = true;
-  try {
-    const tab = await chrome.tabs.get(id);
-    if (!tab?.active) return;
-    const win = await chrome.windows.get(tab.windowId);
-    if (!win?.focused) return;
+  // Browser capture/decoding promises can remain pending across sleep. Bound
+  // the entire operation, and never let an expired request publish or clear a
+  // newer request's guard when its browser callback eventually returns.
+  const request = { stage: "tab", startedAt: Date.now(), expired: false };
+  previewCaptureInFlight = request;
+  previewDiagnostics.attempts += 1;
+  previewDiagnostics.lastResult = "capturing";
+  const isCurrent = () => !request.expired && previewCaptureInFlight === request;
+  const timeoutError = new Error("Preview capture timed out");
+  let timeout;
+  const deadline = new Promise((_, reject) => {
+    timeout = setTimeout(() => {
+      request.expired = true;
+      reject(timeoutError);
+    }, PREVIEW_CAPTURE_TIMEOUT_MS);
+  });
 
+  const capture = async () => {
+    const tab = await chrome.tabs.get(id);
+    if (!isCurrent() || !tab?.active) return;
+    request.stage = "window";
+    const win = await chrome.windows.get(tab.windowId);
+    if (!isCurrent() || !win?.focused) return;
+    const url = tab.url;
+    const windowId = tab.windowId;
+
+    request.stage = "capture";
     lastPreviewCaptureAt = Date.now();
-    const captured = await chrome.tabs.captureVisibleTab(tab.windowId, {
+    const captured = await chrome.tabs.captureVisibleTab(windowId, {
       format: "jpeg",
       quality: PREVIEW_CAPTURE_JPEG_QUALITY
     });
-    if (!captured) return;
+    if (!isCurrent() || !captured) return;
 
+    request.stage = "resize";
     const small = await makeSmallThumbnail(captured);
+    if (!isCurrent()) return;
+    request.stage = "validate";
     const current = await chrome.tabs.get(id);
-    const currentWindow = await chrome.windows.get(current.windowId);
-    if (!current.active || !currentWindow.focused) return;
+    if (!isCurrent() || !current.active || current.url !== url || current.windowId !== windowId) return;
+    const currentWindow = await chrome.windows.get(windowId);
+    if (!isCurrent() || !currentWindow.focused) return;
+    return small;
+  };
 
+  try {
+    const small = await Promise.race([capture(), deadline]);
+    previewDiagnostics.lastResult = small ? "captured" : "skipped";
+    if (!small || !isCurrent()) return;
     rememberThumbnail(id, small);
     sendSocket({ type: "thumbnail", tabId: id, dataUrl: small });
-  } catch (_) {
-    // Protected edge:// pages or file:// URLs without file access simply have no preview.
+    previewDiagnostics.successes += 1;
+    previewDiagnostics.lastSuccessAt = Date.now();
+  } catch (error) {
+    previewDiagnostics.failures += 1;
+    previewDiagnostics.lastResult = error === timeoutError ? "timeout" : "failed";
+    if (error === timeoutError) {
+      previewDiagnostics.timeouts += 1;
+      console.warn("MRU preview timed out during " + request.stage + "; capture released.");
+      // Prefer an already queued visit. Otherwise retry this tab once, so a
+      // transient stall recovers even if the user stays on the same page.
+      if (pendingPreviewTabId == null && retryCount < PREVIEW_TIMEOUT_RETRIES) {
+        scheduleThumbnailCapture(id, 150, retryCount + 1);
+      }
+    }
+    // Protected pages and denied file access still use the placeholder.
   } finally {
-    previewCaptureInFlight = false;
+    clearTimeout(timeout);
+    previewDiagnostics.lastStage = request.stage;
+    if (previewCaptureInFlight === request) previewCaptureInFlight = null;
   }
 }
 
-function scheduleThumbnailCapture(tabId, extraDelay = 0) {
+function scheduleThumbnailCapture(tabId, extraDelay = 0, retryCount = 0) {
   const id = Number(tabId);
   if (!Number.isInteger(id)) return;
 
   pendingPreviewTabId = id;
+  pendingPreviewRetryCount = retryCount;
   if (previewTimer) clearTimeout(previewTimer);
 
   const elapsed = Date.now() - lastPreviewCaptureAt;
@@ -405,8 +458,10 @@ function scheduleThumbnailCapture(tabId, extraDelay = 0) {
   previewTimer = setTimeout(() => {
     previewTimer = null;
     const target = pendingPreviewTabId;
+    const retries = pendingPreviewRetryCount;
     pendingPreviewTabId = null;
-    void captureThumbnail(target);
+    pendingPreviewRetryCount = 0;
+    void captureThumbnail(target, retries);
   }, delay);
 }
 
